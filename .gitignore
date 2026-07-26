@@ -1,0 +1,11 @@
+__pycache__/
+*.egg-info/
+dist/
+build/
+.venv/
+
+# internal strategy notes — not for the public repo
+notes/
+
+# copied in at deploy time so pengy.app/pengy.py serves the current version
+site/pengy.py

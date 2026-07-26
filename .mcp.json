@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "pengy": { "command": "pengy", "args": ["mcp"] }
+  }
+}

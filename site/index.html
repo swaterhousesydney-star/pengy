@@ -1,0 +1,394 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pengy — Stop watching.</title>
+<meta name="description" content="Every other tool shows you more terminals. Pengy runs them — through the night, through the rate limits — and wakes you only when it's genuinely stuck.">
+<link rel="icon" href="assets/pengy.jpg">
+<meta property="og:title" content="Pengy — Stop watching.">
+<meta property="og:description" content="Every other tool shows you more terminals. Pengy runs them — through the night, through the rate limits — and wakes you only when it's genuinely stuck.">
+<meta property="og:image" content="assets/pengy.jpg">
+<meta name="twitter:card" content="summary_large_image">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:        #0B0A0D;
+    --bg-raise:  #141117;
+    --line:      #262029;
+    --ink:       #F6F1F4;
+    --muted:     #9C919B;
+    --dim:       #6B626C;
+    --pink:      #FF3DBE;
+    --pink-soft: #FF8AD9;
+    --gold:      #F5C542;
+
+    --display: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+
+    --pad: clamp(1.25rem, 5vw, 3rem);
+    --max: 1120px;
+  }
+
+  html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--display);
+    font-size: 17px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+
+  .wrap { max-width: var(--max); margin-inline: auto; padding-inline: var(--pad); }
+
+  h1, h2, h3 { font-weight: 830; letter-spacing: -0.045em; line-height: 0.94; }
+
+  a { color: inherit; }
+
+  .mono { font-family: var(--mono); font-size: 0.78em; letter-spacing: 0.06em; text-transform: uppercase; }
+
+  /* ---------- nav ---------- */
+  nav {
+    position: sticky; top: 0; z-index: 50;
+    background: rgba(11,10,13,.82);
+    backdrop-filter: blur(14px);
+    border-bottom: 1px solid var(--line);
+  }
+  .nav-in { display: flex; align-items: center; gap: 1.5rem; height: 62px; }
+  .brand { display: flex; align-items: center; gap: .6rem; font-weight: 830; letter-spacing: -.04em; font-size: 1.15rem; text-decoration: none; }
+  .brand img { width: 30px; height: 30px; border-radius: 8px; display: block; }
+  .nav-links { margin-left: auto; display: flex; gap: 1.6rem; align-items: center; }
+  .nav-links a { color: var(--muted); text-decoration: none; font-size: .95rem; }
+  .nav-links a:hover { color: var(--ink); }
+  @media (max-width: 680px) { .nav-links a:not(.btn-sm) { display: none; } }
+
+  .btn {
+    display: inline-block; background: var(--pink); color: #14040E;
+    font-weight: 750; font-size: 1rem; letter-spacing: -.01em;
+    padding: .9rem 1.6rem; border-radius: 999px; text-decoration: none;
+    border: 0; cursor: pointer; transition: transform .12s ease, background .12s ease;
+  }
+  .btn:hover { background: var(--pink-soft); transform: translateY(-1px); }
+  .btn-sm { padding: .5rem 1.05rem; font-size: .92rem; }
+  .btn-ghost {
+    display: inline-block; padding: .9rem 1.5rem; border-radius: 999px;
+    border: 1px solid var(--line); color: var(--muted); text-decoration: none; font-size: 1rem;
+  }
+  .btn-ghost:hover { border-color: var(--dim); color: var(--ink); }
+
+  /* ---------- hero ---------- */
+  header { position: relative; padding: clamp(3.5rem, 10vw, 7rem) 0 clamp(3rem, 8vw, 5.5rem); overflow: hidden; }
+  header::before {
+    content: ""; position: absolute; inset: -30% 0 auto 40%;
+    width: 70vw; height: 70vw; max-width: 780px; max-height: 780px;
+    background: radial-gradient(circle, rgba(255,61,190,.19), transparent 62%);
+    pointer-events: none;
+  }
+  .hero { position: relative; display: grid; grid-template-columns: 1.15fr .85fr; gap: clamp(2rem, 5vw, 4rem); align-items: center; }
+  @media (max-width: 860px) { .hero { grid-template-columns: 1fr; } }
+
+  .eyebrow { color: var(--pink-soft); margin-bottom: 1.5rem; }
+  h1 { font-size: clamp(3.6rem, 12vw, 6.6rem); margin-bottom: 1.4rem; }
+  .lede { font-size: clamp(1.1rem, 2.4vw, 1.32rem); color: var(--muted); max-width: 34ch; margin-bottom: 2.2rem; }
+  .lede strong { color: var(--ink); font-weight: 620; }
+  .cta-row { display: flex; flex-wrap: wrap; gap: .8rem; align-items: center; }
+  .cta-note { color: var(--dim); font-size: .88rem; margin-top: 1.1rem; }
+
+  .hero-art { position: relative; justify-self: center; }
+  .hero-art img {
+    width: min(340px, 74vw); height: auto; display: block;
+    border-radius: 26px; border: 1px solid var(--line);
+  }
+  .zzz {
+    position: absolute; top: -14px; right: -6px;
+    font-family: var(--mono); font-size: 1.3rem; color: var(--pink-soft);
+    letter-spacing: .18em; opacity: .9;
+  }
+
+  /* ---------- generic section ---------- */
+  section { padding: clamp(3.5rem, 9vw, 6.5rem) 0; border-top: 1px solid var(--line); scroll-margin-top: 70px; }
+  .kicker { color: var(--pink); margin-bottom: 1.1rem; }
+  h2 { font-size: clamp(2.1rem, 5.6vw, 3.3rem); margin-bottom: 1.1rem; }
+  .sub { color: var(--muted); max-width: 56ch; font-size: 1.06rem; }
+
+  /* ---------- comparison ---------- */
+  .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 1.1rem; margin-top: 2.6rem; }
+  @media (max-width: 760px) { .compare { grid-template-columns: 1fr; } }
+  .col { border: 1px solid var(--line); border-radius: 18px; padding: clamp(1.4rem, 3.5vw, 2rem); background: var(--bg-raise); }
+  .col.ours { border-color: rgba(255,61,190,.42); background: linear-gradient(170deg, rgba(255,61,190,.09), transparent 60%), var(--bg-raise); }
+  .col h3 { font-size: 1.55rem; margin-bottom: .35rem; }
+  .col .who { color: var(--dim); font-size: .82rem; letter-spacing: .06em; text-transform: uppercase; font-family: var(--mono); margin-bottom: 1.4rem; }
+  .col.ours .who { color: var(--pink-soft); }
+  .col ul { list-style: none; display: grid; gap: .85rem; }
+  .col li { display: flex; gap: .7rem; align-items: flex-start; color: var(--muted); font-size: 1rem; line-height: 1.45; }
+  .col.ours li { color: var(--ink); }
+  .mark { flex: none; width: 1.15rem; color: var(--dim); font-family: var(--mono); }
+  .col.ours .mark { color: var(--pink); }
+
+  /* ---------- timeline ---------- */
+  .night { margin-top: 2.8rem; border: 1px solid var(--line); border-radius: 18px; overflow: hidden; background: var(--bg-raise); }
+  .night-row { display: grid; grid-template-columns: 124px 1fr; gap: 1.2rem; padding: 1.05rem clamp(1.1rem, 3vw, 1.8rem); border-bottom: 1px solid var(--line); align-items: baseline; }
+  .night-row:last-child { border-bottom: 0; }
+  @media (max-width: 560px) { .night-row { grid-template-columns: 1fr; gap: .3rem; } }
+  .night-row.hit { background: rgba(255,61,190,.06); }
+  .t { font-family: var(--mono); font-size: .84rem; color: var(--pink-soft); letter-spacing: .04em; }
+  .night-row.quiet .t { color: var(--dim); }
+  .e { color: var(--ink); font-size: 1rem; }
+  .e span { color: var(--muted); }
+  .night-foot { padding: 1.3rem clamp(1.1rem, 3vw, 1.8rem); background: rgba(255,61,190,.09); font-size: 1.05rem; font-weight: 620; }
+
+  /* ---------- pillars ---------- */
+  .pillars { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.1rem; margin-top: 2.6rem; }
+  @media (max-width: 860px) { .pillars { grid-template-columns: 1fr; } }
+  .pillar { border: 1px solid var(--line); border-radius: 18px; padding: clamp(1.4rem, 3.5vw, 1.9rem); background: var(--bg-raise); }
+  .pillar .n { font-family: var(--mono); font-size: .8rem; color: var(--pink); margin-bottom: 1rem; display: block; }
+  .pillar h3 { font-size: 1.3rem; margin-bottom: .7rem; line-height: 1.15; }
+  .pillar p { color: var(--muted); font-size: .98rem; }
+
+  /* ---------- leash ---------- */
+  .leash { display: grid; grid-template-columns: 1fr 1fr; gap: 1.1rem; margin-top: 2.6rem; }
+  @media (max-width: 760px) { .leash { grid-template-columns: 1fr; } }
+  .leash-card { border: 1px solid var(--line); border-radius: 18px; padding: clamp(1.4rem, 3.5vw, 1.9rem); background: var(--bg-raise); }
+  .leash-card h3 { font-size: 1.35rem; margin-bottom: .3rem; }
+  .leash-card .tag { font-family: var(--mono); font-size: .76rem; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); margin-bottom: 1.2rem; display: block; }
+  .leash-card ul { list-style: none; display: grid; gap: .6rem; }
+  .leash-card li { color: var(--muted); font-size: .97rem; display: flex; gap: .6rem; }
+  .leash-card li b { color: var(--ink); font-weight: 620; }
+  .never { margin-top: 2rem; border: 1px solid rgba(245,197,66,.3); background: rgba(245,197,66,.06); border-radius: 14px; padding: 1.2rem 1.4rem; color: var(--muted); font-size: .98rem; }
+  .never b { color: var(--gold); font-weight: 700; }
+
+  /* ---------- platforms ---------- */
+  /* ---------- install command ---------- */
+  .cmd {
+    display: flex; align-items: center; gap: .9rem;
+    background: #07060A; border: 1px solid var(--line); border-radius: 12px;
+    padding: .95rem 1.1rem; font-family: var(--mono); font-size: .95rem;
+    color: var(--ink); max-width: 100%; overflow-x: auto; cursor: pointer;
+    -webkit-user-select: all; user-select: all;
+  }
+  .cmd::before { content: "$"; color: var(--pink); flex: none; }
+  .cmd:hover { border-color: rgba(255,61,190,.42); }
+  .cmd code { white-space: nowrap; }
+
+  .plat { display: flex; flex-wrap: wrap; gap: .6rem; margin-top: 2rem; }
+  .chip { font-family: var(--mono); font-size: .8rem; letter-spacing: .06em; padding: .5rem 1rem; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); }
+  .chip.on { border-color: rgba(255,61,190,.4); color: var(--pink-soft); }
+
+  /* ---------- closing ---------- */
+  .close { text-align: center; padding: clamp(4rem, 11vw, 7rem) 0; }
+  .close h2 { font-size: clamp(2.6rem, 8vw, 4.6rem); margin-bottom: 1.3rem; }
+  .close .sub { margin: 0 auto 2.2rem; }
+  .close img { width: 92px; height: 92px; border-radius: 22px; margin-bottom: 2rem; border: 1px solid var(--line); }
+
+  footer { border-top: 1px solid var(--line); padding: 2.5rem 0; color: var(--dim); font-size: .88rem; }
+  .foot-in { display: flex; flex-wrap: wrap; gap: 1rem 2rem; align-items: center; }
+  .foot-in a { color: var(--muted); text-decoration: none; }
+  .foot-in a:hover { color: var(--ink); }
+  .foot-note { margin-left: auto; }
+  @media (max-width: 620px) { .foot-note { margin-left: 0; } }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap nav-in">
+    <a class="brand" href="#top"><img src="assets/pengy.jpg" alt=""> Pengy</a>
+    <div class="nav-links">
+      <a href="#difference">The difference</a>
+      <a href="#night">A night with Pengy</a>
+      <a href="#plugin">Plugin</a>
+      <a href="https://github.com/swaterhousesydney-star/pengy">GitHub</a>
+      <a class="btn btn-sm" href="#access">Install</a>
+    </div>
+  </div>
+</nav>
+
+<header id="top">
+  <div class="wrap hero">
+    <div>
+      <div class="mono eyebrow">For people running more than one AI agent</div>
+      <h1>Stop<br>watching.</h1>
+      <p class="lede">Every other tool shows you more terminals. Pengy <strong>runs</strong> them — through the night, through the rate limits — and wakes you only when it's genuinely stuck.</p>
+      <div class="cmd" title="Click to select, then copy"><code>curl -fsSL https://pengy.app/install.sh | sh</code></div>
+      <div class="cta-row" style="margin-top:1.1rem">
+        <a class="btn" href="https://github.com/swaterhousesydney-star/pengy">View on GitHub</a>
+        <a class="btn-ghost" href="#night">See a night with Pengy</a>
+      </div>
+      <p class="cta-note">Free, MIT, zero dependencies. One Python file that drives the agent subscriptions you already pay for.</p>
+    </div>
+    <div class="hero-art">
+      <div class="zzz">z z z</div>
+      <img src="assets/pengy.jpg" alt="Pengy">
+    </div>
+  </div>
+</header>
+
+<section id="difference">
+  <div class="wrap">
+    <div class="mono kicker">The difference</div>
+    <h2>Visibility is the consolation prize<br>for being at your desk.</h2>
+    <p class="sub">Nobody actually wants live diffs. They want the work done. Live diffs are what you settle for when you have to sit there anyway — so twelve products now compete to show you more, faster, in fewer windows. None of them let you leave.</p>
+
+    <div class="compare">
+      <div class="col">
+        <h3>Stop switching windows</h3>
+        <div class="who">Everyone else</div>
+        <ul>
+          <li><span class="mark">—</span> Every terminal visible at once</li>
+          <li><span class="mark">—</span> Live diffs of every change as it happens</li>
+          <li><span class="mark">—</span> A notification each time an agent finishes</li>
+          <li><span class="mark">—</span> You approve each prompt as it arrives</li>
+          <li><span class="mark">—</span> Hits a rate limit and stops until you notice</li>
+          <li><span class="mark">—</span> Works brilliantly — while you sit there</li>
+        </ul>
+      </div>
+      <div class="col ours">
+        <h3>Stop watching</h3>
+        <div class="who">Pengy</div>
+        <ul>
+          <li><span class="mark">✓</span> One summary, when the work is done</li>
+          <li><span class="mark">✓</span> Diffs are there if you want them. Usually you won't.</li>
+          <li><span class="mark">✓</span> Silence unless it's genuinely stuck</li>
+          <li><span class="mark">✓</span> Rules you set once, applied while you're gone</li>
+          <li><span class="mark">✓</span> Hits a rate limit, waits it out, picks up where it stopped</li>
+          <li><span class="mark">✓</span> Works while you're asleep</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="night">
+  <div class="wrap">
+    <div class="mono kicker">A night with Pengy</div>
+    <h2>The cap hits at 1:15am.<br>You find out at breakfast.</h2>
+    <p class="sub">Usage windows don't care what time it is. Every other tool stops dead and waits for a human. Here's the same night, twice.</p>
+
+    <div class="night">
+      <div class="night-row"><div class="t">23:40</div><div class="e">You hand Pengy the job and close the laptop. <span>"Finish the checkout flow and run the tests."</span></div></div>
+      <div class="night-row"><div class="t">00:52</div><div class="e">Claude finishes the API layer. Codex starts on the tests. <span>No alert — nothing needs you.</span></div></div>
+      <div class="night-row hit"><div class="t">01:15</div><div class="e">Claude hits its 5-hour cap. <span>Pengy reads the reset time and waits. Still no alert.</span></div></div>
+      <div class="night-row quiet"><div class="t">01:15 — 03:00</div><div class="e"><span>Nothing. This is the part every other tool gets wrong.</span></div></div>
+      <div class="night-row hit"><div class="t">03:00</div><div class="e">Window resets. Pengy resumes exactly where it stopped.</div></div>
+      <div class="night-row"><div class="t">04:31</div><div class="e">The migration needs a decision Claude won't make on its own. <span>Not a cap — so Pengy stops and pings you once.</span></div></div>
+      <div class="night-row"><div class="t">07:50</div><div class="e">One message on your phone. You pick it up over coffee.</div></div>
+      <div class="night-foot">Seven hours of work. One notification. No 3am alerts, because you weren't needed at 3am.</div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="mono kicker">What makes it true</div>
+    <h2>Three things, and the first one<br>is the whole product.</h2>
+
+    <div class="pillars">
+      <div class="pillar">
+        <span class="n">01</span>
+        <h3>It knows every agent's quota</h3>
+        <p>Pengy tracks when each usage window resets, across every vendor you run. On a cap it either waits it out and resumes, or hands the task to an agent that still has budget. Nothing else does this across vendors — the model providers have no reason to help you route around their own limits.</p>
+      </div>
+      <div class="pillar">
+        <span class="n">02</span>
+        <h3>It escalates. It doesn't notify.</h3>
+        <p>An alert every time an agent finishes is an app you mute by Thursday. Pengy stays quiet unless something is genuinely blocked, then asks one question you can answer with one tap from anywhere.</p>
+      </div>
+      <div class="pillar">
+        <span class="n">03</span>
+        <h3>It operates. It doesn't observe.</h3>
+        <p>Desktop assistants watch your agents and narrate what they did. Pengy picks the agent, writes the prompt, reads the result, and decides what happens next. Watching and operating are not the same job.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="control">
+  <div class="wrap">
+    <div class="mono kicker">Control</div>
+    <h2>On a leash, or off it.<br>Your call, per agent.</h2>
+    <p class="sub">Trust is the entire product, so the settings are two words long and the honest description of each is short enough to read.</p>
+
+    <div class="leash">
+      <div class="leash-card">
+        <h3>On a leash</h3>
+        <span class="tag">Default</span>
+        <ul>
+          <li><b>Edits</b> files in the directory you pointed it at</li>
+          <li><b>Stops</b> at anything needing a decision, and pings you</li>
+          <li><b>Waits out</b> caps and resumes on its own</li>
+          <li><b>Runs</b> your agent's own edits-only permission mode</li>
+        </ul>
+      </div>
+      <div class="leash-card">
+        <h3>Off the leash</h3>
+        <span class="tag">--off-leash</span>
+        <ul>
+          <li><b>Runs</b> commands, installs packages, executes the test suite</li>
+          <li><b>Keeps going</b> through caps, restarts and failures</li>
+          <li><b>Hands over</b> to another agent when one runs out of budget</li>
+          <li><b>Is</b> your agent's own bypass mode — read the line below</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="never">
+      <b>Pengy is not a sandbox, and won't pretend to be one.</b> Off the leash passes your agent its own bypass flag. Pengy does not sit between the agent and your filesystem, and it cannot stop an agent that decides to delete something. What it does is refuse to be the thing that surprises you: the default is on the leash, it never invents a prompt you didn't write, and it never guesses a reset time it didn't read. Run it on a git repo.
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="mono kicker">Where it runs</div>
+    <h2>Your machine. Your keys.<br>Your agents.</h2>
+    <p class="sub">Pengy runs on your own computer and drives the agent subscriptions you already pay for. No API keys, no account, no server, no telemetry — the only network call it can make is a notification webhook you set yourself. It is <a href="https://github.com/swaterhousesydney-star/pengy" style="color:var(--pink-soft)">one MIT-licensed Python file</a> with no dependencies, so reading all of it before you trust it with a night is a realistic thing to do.</p>
+    <div class="plat">
+      <span class="chip on">macOS</span>
+      <span class="chip on">Windows</span>
+      <span class="chip on">Linux</span>
+      <span class="chip on">Claude Code</span>
+      <span class="chip on">Codex</span>
+      <span class="chip on">Gemini CLI</span>
+      <span class="chip">Kimi — next</span>
+      <span class="chip">Antigravity — next</span>
+    </div>
+  </div>
+</section>
+
+<section id="plugin">
+  <div class="wrap">
+    <div class="mono kicker">Also a plugin</div>
+    <h2>Your agent can hand<br>work to Pengy itself.</h2>
+    <p class="sub">Pengy runs as an MCP server, so the agent you're already talking to can check who still has quota and start a job that survives the cap. One line per host — Claude Code, Codex, Gemini CLI, Cursor, anything that speaks MCP.</p>
+    <div class="cmd" style="max-width:min(460px,100%);margin-top:1.8rem" title="Click to select, then copy"><code>claude mcp add pengy -- pengy mcp</code></div>
+    <p class="sub" style="margin-top:1.6rem">Then: <em>"check what still has budget and hand the migration to Codex overnight."</em> An agent can't grant itself a bypass mode — jobs it starts run on the leash, and only you can change that.</p>
+  </div>
+</section>
+
+<section class="close" id="access">
+  <div class="wrap">
+    <img src="assets/pengy.jpg" alt="Pengy">
+    <h2>Go to bed.</h2>
+    <p class="sub">One file, no dependencies, nothing to sign up for. Needs Python 3.9+ and an agent CLI you're already logged into.</p>
+    <div class="cmd" style="max-width:min(520px,100%);margin:0 auto 1.4rem;text-align:left" title="Click to select, then copy"><code>curl -fsSL https://pengy.app/install.sh | sh</code></div>
+    <a class="btn" href="https://github.com/swaterhousesydney-star/pengy">View on GitHub</a>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot-in">
+    <a class="brand" href="#top" style="font-size:1rem"><img src="assets/pengy.jpg" alt="" style="width:22px;height:22px"> Pengy</a>
+    <a href="#difference">The difference</a>
+    <a href="#control">Control</a>
+    <a href="https://github.com/swaterhousesydney-star/pengy">GitHub</a>
+    <a href="#access">Install</a>
+    <span class="foot-note">MIT licensed · runs entirely on your machine</span>
+  </div>
+</footer>
+
+</body>
+</html>

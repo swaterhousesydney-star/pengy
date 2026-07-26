@@ -1,0 +1,24 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "pengy",
+  "version": "0.1.0",
+  "description": "Hand long jobs to a background agent that survives usage caps. Pengy waits out the rate limit, resumes the session, and keeps working after you close the laptop.",
+  "author": {
+    "name": "swaterhousesydney-star",
+    "url": "https://github.com/swaterhousesydney-star"
+  },
+  "homepage": "https://pengy.app",
+  "repository": "https://github.com/swaterhousesydney-star/pengy",
+  "license": "MIT",
+  "keywords": [
+    "rate-limit",
+    "usage-limit",
+    "background",
+    "delegation",
+    "overnight"
+  ],
+  "skills": [
+    "./skills/pengy"
+  ],
+  "mcpServers": "./.mcp.json"
+}

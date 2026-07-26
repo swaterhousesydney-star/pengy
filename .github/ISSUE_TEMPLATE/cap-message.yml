@@ -1,0 +1,29 @@
+name: Cap message
+description: You hit a rate limit and Pengy misread it (or you just want to donate the message)
+title: "cap message: "
+labels: [parser]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Every message here makes overnight runs work for everyone. Takes 30 seconds.
+        Redact your own paths if you like — nothing else.
+  - type: input
+    id: agent
+    attributes:
+      label: Agent
+      placeholder: claude / codex / gemini / something else
+    validations:
+      required: true
+  - type: textarea
+    id: message
+    attributes:
+      label: The message, verbatim
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: expected
+    attributes:
+      label: When did it actually reset?
+      description: Your best knowledge. "3am my time", "about 90 minutes later", "no idea" are all fine.

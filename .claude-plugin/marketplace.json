@@ -1,0 +1,21 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "pengy",
+  "owner": { "name": "swaterhousesydney-star", "url": "https://github.com/swaterhousesydney-star" },
+  "metadata": {
+    "description": "Pengy — keeps your AI coding agents working after they hit the rate limit.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "pengy",
+      "source": "./",
+      "description": "Hand long jobs to a background agent that survives usage caps.",
+      "version": "0.1.0",
+      "author": { "name": "swaterhousesydney-star" },
+      "homepage": "https://pengy.app",
+      "license": "MIT",
+      "keywords": ["rate-limit", "usage-limit", "background", "delegation"]
+    }
+  ]
+}

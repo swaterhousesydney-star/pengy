@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.9", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python test_pengy.py
+      - run: python pengy.py agents
+
+  install-script:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: serve the repo and install from it
+        run: |
+          python3 -m http.server 8799 &
+          sleep 1
+          PENGY_SRC=http://127.0.0.1:8799 PENGY_BIN="$HOME/.local/bin" sh site/install.sh
+          "$HOME/.local/bin/pengy" --version
