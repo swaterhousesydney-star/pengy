@@ -15,19 +15,24 @@ interval and waking into a still-capped agent at 4am.
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import uuid
+import webbrowser
 from collections import deque
 from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 PROMPT = "{prompt}"
 SESSION = "{session}"
@@ -787,6 +792,377 @@ def do_mcp(_args: argparse.Namespace) -> int:
     return 0
 
 
+# ------------------------------------------------------------------ ui --
+
+# `pengy chat` is a local page, not a terminal. Browser rather than tkinter:
+# python3-tk is a separate package on most Linux distributions, and "zero
+# dependencies" has to stay true. This also inherits the brand from the site.
+
+PENGY_SVG = """<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+<ellipse cx="32" cy="38" rx="22" ry="24" fill="#FF3DBE"/>
+<ellipse cx="32" cy="42" rx="14" ry="18" fill="#FFD9F1"/>
+<circle cx="32" cy="22" r="18" fill="#FF3DBE"/>
+<ellipse cx="25" cy="21" rx="6.5" ry="7" fill="#fff"/>
+<ellipse cx="39" cy="21" rx="6.5" ry="7" fill="#fff"/>
+<circle cx="26" cy="22" r="3.2" fill="#14040E"/>
+<circle cx="38" cy="22" r="3.2" fill="#14040E"/>
+<path d="M27 31 q5 4 10 0" stroke="#14040E" stroke-width="2.2" fill="none" stroke-linecap="round"/>
+<path d="M32 27 l-5 3 h10 z" fill="#F5C542"/>
+<ellipse cx="9" cy="40" rx="5" ry="11" fill="#FF3DBE" transform="rotate(15 9 40)"/>
+<ellipse cx="55" cy="40" rx="5" ry="11" fill="#FF3DBE" transform="rotate(-15 55 40)"/>
+</svg>"""
+
+CHAT_HTML = r"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pengy</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{--bg:#0B0A0D;--raise:#141117;--line:#262029;--ink:#F6F1F4;--muted:#9C919B;
+--dim:#6B626C;--pink:#FF3DBE;--soft:#FF8AD9;--gold:#F5C542;
+--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+body{background:var(--bg);color:var(--ink);font:16px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;
+height:100vh;display:flex;flex-direction:column;-webkit-font-smoothing:antialiased}
+header{display:flex;align-items:center;gap:.75rem;padding:.85rem 1.1rem;border-bottom:1px solid var(--line);
+background:rgba(11,10,13,.9);backdrop-filter:blur(12px);flex:none}
+header svg{width:34px;height:34px;flex:none}
+.name{font-weight:830;letter-spacing:-.03em;font-size:1.1rem}
+.status{margin-left:auto;font-family:var(--mono);font-size:.72rem;letter-spacing:.07em;text-transform:uppercase;color:var(--dim)}
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--gold);margin-right:.45rem;vertical-align:middle}
+.dot.idle{background:var(--dim)}.dot.work{background:var(--pink)}.dot.cap{background:var(--gold)}
+#log{flex:1;overflow-y:auto;padding:1.5rem 1.1rem;display:flex;flex-direction:column;gap:1rem}
+.wrapin{width:100%;max-width:820px;margin-inline:auto}
+.turn{display:flex;gap:.7rem;max-width:min(680px,100%);align-items:flex-start}
+.turn.me{align-self:flex-end;flex-direction:row-reverse}
+.av{width:30px;height:30px;flex:none;border-radius:9px;overflow:hidden}
+.turn.me .av{background:var(--line);display:grid;place-items:center;color:var(--muted);font-size:.7rem;font-weight:700}
+.bub{background:var(--raise);border:1px solid var(--line);border-radius:16px;padding:.7rem 1rem;white-space:pre-wrap;word-break:break-word}
+.turn.me .bub{background:linear-gradient(160deg,rgba(255,61,190,.16),transparent),var(--raise);border-color:rgba(255,61,190,.35)}
+.bub .quiet{color:var(--muted)}
+.opts{display:flex;flex-wrap:wrap;gap:.45rem;margin-top:.7rem}
+.opt{background:transparent;border:1px solid var(--line);color:var(--muted);border-radius:999px;
+padding:.35rem .85rem;font:inherit;font-size:.86rem;cursor:pointer}
+.opt:hover{border-color:var(--pink);color:var(--ink)}
+.opt.on{border-color:var(--pink);color:var(--soft);background:rgba(255,61,190,.1)}
+pre.out{font-family:var(--mono);font-size:.76rem;color:var(--muted);background:#07060A;border:1px solid var(--line);
+border-radius:10px;padding:.7rem .8rem;margin-top:.7rem;max-height:230px;overflow:auto;white-space:pre}
+footer{flex:none;border-top:1px solid var(--line);padding:.85rem 1.1rem;background:var(--raise)}
+.bar{display:flex;flex-wrap:wrap;gap:.45rem;align-items:center;margin-bottom:.6rem}
+.bar label{font-family:var(--mono);font-size:.68rem;letter-spacing:.07em;text-transform:uppercase;color:var(--dim)}
+select,input[type=text]{background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:8px;
+padding:.35rem .6rem;font:inherit;font-size:.85rem}
+input[type=text]{flex:1;min-width:150px;max-width:480px;font-family:var(--mono);font-size:.78rem}
+.compose{display:flex;gap:.6rem;align-items:flex-end}
+textarea{flex:1;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:14px;
+padding:.7rem .9rem;font:inherit;resize:none;min-height:52px;max-height:180px}
+textarea:focus,select:focus,input:focus{outline:none;border-color:var(--pink)}
+button.send{background:var(--pink);color:#14040E;border:0;border-radius:999px;padding:.75rem 1.4rem;
+font:inherit;font-weight:750;cursor:pointer;flex:none}
+button.send:hover{background:var(--soft)}
+button.send:disabled{opacity:.45;cursor:not-allowed}
+.hint{color:var(--dim);font-size:.76rem;margin-top:.5rem}
+</style></head><body>
+<header>__SVG__<div class="name">Pengy</div><div class="status"><span class="dot idle" id="dot"></span><span id="st">idle</span></div></header>
+<div id="log"></div>
+<footer>
+  <div class="bar">
+    <label>agent</label><select id="agent"></select>
+    <label>folder</label><input type="text" id="dir">
+    <button class="opt" id="leash" title="Off the leash passes the agent its own bypass flag">on a leash</button>
+  </div>
+  <div class="compose">
+    <textarea id="msg" placeholder="Tell Pengy what to do, then close the laptop…" rows="2"></textarea>
+    <button class="send" id="send">Send</button>
+  </div>
+  <div class="hint">Enter sends · Shift+Enter for a new line</div>
+</footer>
+<script>
+const KEY = new URLSearchParams(location.search).get('k') || '';
+const $ = s => document.querySelector(s);
+const api = (p, o={}) => fetch(p, {...o, headers:{'X-Pengy-Key':KEY,'Content-Type':'application/json',...(o.headers||{})}}).then(r=>r.json());
+const AV = `__SVG__`;
+let offLeash = false, current = null, seen = 0, lastState = '';
+
+function say(text, opts) {
+  const t = document.createElement('div'); t.className = 'turn';
+  t.innerHTML = `<div class="av">${AV}</div><div class="bub"></div>`;
+  t.querySelector('.bub').append(...render(text));
+  if (opts) {
+    const row = document.createElement('div'); row.className = 'opts';
+    opts.forEach(o => { const b = document.createElement('button'); b.className='opt'; b.textContent=o.label;
+      b.onclick = () => { row.remove(); o.run(); }; row.appendChild(b); });
+    t.querySelector('.bub').appendChild(row);
+  }
+  $('#log').appendChild(t); scroll(); return t;
+}
+function render(text){ const f=document.createDocumentFragment(); f.append(document.createTextNode(text)); return [f]; }
+function me(text) {
+  const t = document.createElement('div'); t.className = 'turn me';
+  t.innerHTML = `<div class="av">you</div><div class="bub"></div>`;
+  t.querySelector('.bub').textContent = text; $('#log').appendChild(t); scroll();
+}
+function scroll(){ $('#log').scrollTop = $('#log').scrollHeight; }
+function setDot(cls, label){ $('#dot').className = 'dot ' + cls; $('#st').textContent = label; }
+
+async function boot() {
+  const s = await api('/api/state');
+  $('#dir').value = s.cwd;
+  $('#agent').innerHTML = s.agents.filter(a=>a.installed)
+    .map(a=>`<option value="${a.name}">${a.name}</option>`).join('') || '<option>none found</option>';
+  const ready = s.agents.filter(a=>a.installed);
+  const capped = ready.filter(a=>a.capped);
+  if (!ready.length) { say("No agent CLIs on this machine yet. Install Claude Code, Codex, Gemini, OpenCode, Kimi, Antigravity or Droid, then reopen me."); return; }
+  let hi = `Ready. ${ready.length} agent${ready.length>1?'s':''} here: ${ready.map(a=>a.name).join(', ')}.`;
+  if (capped.length) hi += `\n${capped.map(a=>`${a.name} is capped until ${a.until||'an unknown time'}`).join('; ')}.`;
+  hi += `\n\nGive me a job and go and do something else. If the agent hits its cap I'll wait for the window and pick it back up.`;
+  say(hi);
+  if (s.jobs.some(j=>j.state==='running')) {
+    const j = s.jobs.find(j=>j.state==='running');
+    say(`One from earlier is still going — ${j.agent}, "${j.prompt}".`, [{label:'Watch it', run:()=>watch(j.id)}]);
+  }
+}
+
+async function send() {
+  const text = $('#msg').value.trim(); if (!text) return;
+  if (current) { say("Something's already running. Let that finish first."); return; }
+  me(text); $('#msg').value = '';
+  const body = { prompt:text, agent:$('#agent').value, dir:$('#dir').value, off_leash:offLeash };
+  const r = await api('/api/run', {method:'POST', body:JSON.stringify(body)});
+  if (r.error) { say('That did not start: ' + r.error); return; }
+  say(`${r.agent} is on it${offLeash?', off the leash':''}. I'll tell you when something changes.`);
+  watch(r.id);
+}
+
+function watch(id) {
+  current = id; seen = 0; lastState = ''; setDot('work','working');
+  const box = document.createElement('pre'); box.className='out'; box.textContent='';
+  const t = say('Working.'); t.querySelector('.bub').appendChild(box);
+  const tick = async () => {
+    const r = await api(`/api/log?id=${encodeURIComponent(id)}&pos=${seen}`);
+    if (r.text) { seen = r.pos; box.textContent = (box.textContent + r.text).slice(-6000); box.scrollTop = box.scrollHeight; }
+    if (r.phase && r.phase !== lastState) {
+      lastState = r.phase;
+      if (r.phase === 'capped') { setDot('cap','waiting out a cap'); say(r.note || "Capped. I'll wait for the window and resume."); }
+      if (r.phase === 'resumed') { setDot('work','working'); say('Window reset. Picking it back up.'); }
+    }
+    if (r.state !== 'running') {
+      current = null; setDot('idle','idle');
+      say(r.exit === 0 ? (r.summary || 'Done.') : `That one stopped and needs you. ${r.summary||''}`.trim());
+      return;
+    }
+    setTimeout(tick, 2000);
+  };
+  tick();
+}
+
+$('#send').onclick = send;
+$('#msg').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
+$('#leash').onclick = () => {
+  offLeash = !offLeash;
+  $('#leash').classList.toggle('on', offLeash);
+  $('#leash').textContent = offLeash ? 'off the leash' : 'on a leash';
+  if (offLeash) say("Off the leash means the agent gets its own bypass mode — it can run commands and install things. I am not a sandbox and cannot stop it. Use a folder that's in git.");
+};
+boot();
+setInterval(() => api('/api/state').catch(()=>{}), 20000);
+</script></body></html>"""
+
+
+def _job_phase(text: str) -> tuple[str | None, str | None]:
+    """What the log says is happening right now, in Pengy's voice."""
+    phase, note = None, None
+    for line in text.splitlines():
+        if "capped. Resuming at" in line:
+            phase, note = "capped", line.split("pengy ", 1)[-1].strip()
+        elif "window reset" in line:
+            phase = "resumed"
+    return phase, note
+
+
+def _ui_state() -> dict:
+    led = read_ledger()
+    agents = []
+    for name in AGENTS:
+        entry = led.get(name, {})
+        capped = entry.get("state") == "capped" and not quota_ok(name)
+        until = None
+        if capped and entry.get("resetsAt"):
+            until = datetime.fromisoformat(entry["resetsAt"]).astimezone().strftime("%H:%M")
+        agents.append({"name": name, "installed": bool(agent_bin(name)), "capped": capped, "until": until})
+    jobs = sorted((job_meta(p.stem) for p in jobs_dir().glob("*.json")),
+                  key=lambda m: m.get("started", ""), reverse=True)[:10]
+    for j in jobs:
+        if j.get("state") == "running" and not _alive(j.get("pid")):
+            j["state"] = "gone"
+    return {"cwd": os.getcwd(), "agents": agents, "jobs": jobs}
+
+
+def _ui_log(jid: str, pos: int) -> dict:
+    meta = job_meta(jid)
+    path = jobs_dir() / f"{jid}.log"
+    text = ""
+    try:
+        with path.open("r", errors="replace") as fh:
+            fh.seek(pos)
+            text = fh.read()
+            pos = fh.tell()
+    except OSError:
+        pass
+    whole = path.read_text(errors="replace") if path.exists() else ""
+    phase, note = _job_phase(whole)
+    state = meta.get("state", "running")
+    if state == "running" and not _alive(meta.get("pid")):
+        state = "gone"
+    summary = ""
+    for line in reversed(whole.splitlines()):
+        if "finished in" in line or "needs you" in line or "did not say when" in line:
+            summary = line.split("pengy ", 1)[-1].strip()
+            break
+    return {"text": text, "pos": pos, "state": state, "exit": meta.get("exit"),
+            "phase": phase, "note": note, "summary": summary}
+
+
+def _ui_run(body: dict) -> dict:
+    prompt = (body.get("prompt") or "").strip()
+    if not prompt:
+        return {"error": "no prompt"}
+    agent = body.get("agent") or (installed() or [None])[0]
+    if agent not in AGENTS or not agent_bin(agent):
+        return {"error": f"{agent!r} is not installed"}
+    cwd = Path(body.get("dir") or ".").expanduser()
+    if not cwd.is_dir():
+        return {"error": f"no such folder: {cwd}"}
+    args = argparse.Namespace(prompt=prompt, agent=agent, dir=str(cwd), max_waits=4,
+                              fallback=body.get("fallback") or None, job_id=None,
+                              off_leash=bool(body.get("off_leash")))
+    return {"id": detach(args, agent, cwd.resolve()), "agent": agent}
+
+
+def _handler(token: str, page: bytes):
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+        last_seen = time.time()
+
+        def log_message(self, *a):  # the terminal is the thing we are replacing
+            pass
+
+        def _send(self, code, body: bytes, ctype="application/json"):
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _ok(self, obj):
+            Handler.last_seen = time.time()
+            self._send(200, json.dumps(obj).encode())
+
+        def _authed(self, query) -> bool:
+            # This server can start an agent in any folder, so it is a real
+            # trust boundary. Loopback alone is not enough: any page in the
+            # browser can POST to localhost. A per-run token it cannot guess,
+            # plus a Host check against DNS rebinding, is what gates it.
+            host = (self.headers.get("Host") or "").split(":")[0]
+            if host not in ("127.0.0.1", "localhost"):
+                return False
+            given = self.headers.get("X-Pengy-Key") or query.get("k", [""])[0]
+            return hmac.compare_digest(given, token)
+
+        def do_GET(self):
+            url = urlparse(self.path)
+            query = parse_qs(url.query)
+            if not self._authed(query):
+                return self._send(403, b"forbidden", "text/plain")
+            if url.path == "/":
+                return self._send(200, page, "text/html; charset=utf-8")
+            if url.path == "/api/state":
+                return self._ok(_ui_state())
+            if url.path == "/api/log":
+                jid = query.get("id", [""])[0]
+                if not re.fullmatch(r"[0-9a-zA-Z-]{1,40}", jid):
+                    return self._ok({"error": "bad id"})
+                return self._ok(_ui_log(jid, int(query.get("pos", ["0"])[0] or 0)))
+            self._send(404, b"not found", "text/plain")
+
+        def do_POST(self):
+            url = urlparse(self.path)
+            if not self._authed(parse_qs(url.query)):
+                return self._send(403, b"forbidden", "text/plain")
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                body = json.loads(self.rfile.read(length) or b"{}")
+            except ValueError:
+                return self._ok({"error": "bad request"})
+            if url.path == "/api/run":
+                try:
+                    return self._ok(_ui_run(body))
+                except Exception as exc:
+                    return self._ok({"error": str(exc)})
+            self._send(404, b"not found", "text/plain")
+
+    return Handler
+
+
+def do_chat(args: argparse.Namespace) -> int:
+    token = uuid.uuid4().hex
+    page = CHAT_HTML.replace("__SVG__", PENGY_SVG).encode()
+    handler = _handler(token, page)
+    server = ThreadingHTTPServer(("127.0.0.1", args.port), handler)
+    url = f"http://127.0.0.1:{server.server_port}/?k={token}"
+    say(f"Pengy is at {url}")
+    say(f"{DIM}closes itself when you close the tab; jobs keep running{OFF}")
+
+    def reap():
+        # Launched from the menu icon there is no terminal to Ctrl-C, so exit
+        # once the page has stopped its heartbeat. Detached jobs are unaffected.
+        while time.time() - handler.last_seen < args.idle:
+            time.sleep(5)
+        server.shutdown()
+
+    threading.Thread(target=reap, daemon=True).start()
+    if not args.no_open:
+        webbrowser.open(url)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    say("bye.")
+    return 0
+
+
+DESKTOP_ENTRY = """[Desktop Entry]
+Type=Application
+Name=Pengy
+Comment=Runs your AI coding agents while you are away
+Exec={exe} chat
+Icon={icon}
+Terminal=false
+Categories=Development;
+"""
+
+
+def do_desktop(_args: argparse.Namespace) -> int:
+    """Put a Pengy icon in the app menu so it is a double-click, not a command."""
+    if sys.platform == "darwin" or os.name == "nt":
+        say("desktop launchers are Linux-only for now — run `pengy chat`.")
+        return 1
+    icon_dir = Path.home() / ".local/share/icons"
+    apps_dir = Path.home() / ".local/share/applications"
+    icon_dir.mkdir(parents=True, exist_ok=True)
+    apps_dir.mkdir(parents=True, exist_ok=True)
+    icon = icon_dir / "pengy.svg"
+    icon.write_text(PENGY_SVG)
+    exe = shutil.which("pengy") or f"{sys.executable} {os.path.abspath(__file__)}"
+    entry = apps_dir / "pengy.desktop"
+    entry.write_text(DESKTOP_ENTRY.format(exe=exe, icon=icon))
+    entry.chmod(0o755)
+    subprocess.run(["update-desktop-database", str(apps_dir)], check=False, capture_output=True)
+    say(f"added {entry}")
+    say("Pengy is now in your applications menu. Search for it and pin it.")
+    return 0
+
+
 # ----------------------------------------------------------------- misc --
 
 
@@ -845,6 +1221,13 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--job-id", help=argparse.SUPPRESS)  # set when re-invoked by --detach
     r.set_defaults(func=do_run)
 
+    c = subs.add_parser("chat", help="open the Pengy window — a chat, not a terminal")
+    c.add_argument("--port", type=int, default=0, help="fixed port (default: pick a free one)")
+    c.add_argument("--no-open", action="store_true", help="print the URL instead of opening a browser")
+    c.add_argument("--idle", type=int, default=180, help="quit after this many seconds with the tab closed")
+    c.set_defaults(func=do_chat)
+
+    subs.add_parser("desktop", help="add Pengy to your applications menu").set_defaults(func=do_desktop)
     subs.add_parser("agents", help="which agents are installed, and their quota state").set_defaults(func=do_agents)
     subs.add_parser("jobs", help="background jobs, running and finished").set_defaults(func=do_jobs)
     subs.add_parser("mcp", help="run as an MCP server so other agents can use Pengy").set_defaults(func=do_mcp)

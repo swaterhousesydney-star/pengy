@@ -4,14 +4,14 @@
   "owner": { "name": "swaterhousesydney-star", "url": "https://github.com/swaterhousesydney-star" },
   "metadata": {
     "description": "Pengy — keeps your AI coding agents working after they hit the rate limit.",
-    "version": "0.2.0"
+    "version": "0.3.0"
   },
   "plugins": [
     {
       "name": "pengy",
       "source": "./",
       "description": "Hand long jobs to a background agent that survives usage caps.",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "author": { "name": "swaterhousesydney-star" },
       "homepage": "https://github.com/swaterhousesydney-star/pengy",
       "license": "MIT",

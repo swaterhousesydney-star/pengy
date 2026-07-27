@@ -77,6 +77,23 @@ agents    claude, codex, gemini, opencode, kimi, antigravity, droid
 parser    ok
 ```
 
+## The window
+
+If you'd rather not look at a terminal at all:
+
+```bash
+pengy chat        # opens a Pengy window in your browser
+pengy desktop     # puts a Pengy icon in your applications menu (Linux)
+```
+
+You get a chat box. Pengy tells you which agents are ready and which are capped, you type a
+job, and it narrates what's happening — including the cap it's waiting out. The agent's output
+is there if you want it, folded into the message. It runs entirely on `127.0.0.1`, gated by a
+token generated per launch, and quits itself once you close the tab. Jobs carry on regardless.
+
+No Electron, no dependencies — the page is served by the standard library and drawn in the
+same colours as the site.
+
 ## Use
 
 ```bash
