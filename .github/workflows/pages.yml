@@ -1,0 +1,32 @@
+# Publishes site/ to GitHub Pages, with install.sh and pengy.py alongside it.
+# Manual trigger only: enable Pages first (Settings -> Pages -> Source: GitHub
+# Actions), then run this once. On a push trigger it would fail — and a red X on
+# the front page of a project asking for trust is not worth the convenience.
+name: pages
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: cp install.sh pengy.py site/
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deploy
+        uses: actions/deploy-pages@v4

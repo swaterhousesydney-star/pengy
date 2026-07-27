@@ -29,5 +29,5 @@ jobs:
         run: |
           python3 -m http.server 8799 &
           sleep 1
-          PENGY_SRC=http://127.0.0.1:8799 PENGY_BIN="$HOME/.local/bin" sh site/install.sh
+          PENGY_SRC=http://127.0.0.1:8799 PENGY_BIN="$HOME/.local/bin" sh install.sh
           "$HOME/.local/bin/pengy" --version

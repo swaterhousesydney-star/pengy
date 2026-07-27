@@ -7,6 +7,7 @@ first and make it pass second.
 """
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -106,6 +107,45 @@ assert parse_reset("Something failed, try again at 5") is None
 assert is_capped("You've reached your usage limit. Upgrade to Pro for higher limits.", 1)
 assert parse_reset("You've reached your usage limit. Upgrade to Pro for higher limits.") is None
 assert parse_reset("429 Too Many Requests") is None
+
+
+# ------------------------------------------------- the adapter table --
+
+# Every adapter mistake found so far has been structural: a flag that means
+# something else on that CLI, a prompt swallowed as a positional, a working
+# directory silently ignored. These assertions catch that shape of error.
+for name, spec in pengy.AGENTS.items():
+    names = spec["bin"] if isinstance(spec["bin"], list) else [spec["bin"]]
+    assert names and all(isinstance(n, str) for n in names), name
+
+    for kind in ("run", "resume"):
+        cmd = spec[kind]
+        assert cmd, f"{name}.{kind} is empty"
+        # The launcher rewrites cmd[0] to the resolved absolute path, so the
+        # first element must be the binary and never a flag or a placeholder.
+        assert cmd[0] in names or cmd[0] == "{bin}", f"{name}.{kind} must lead with the binary"
+        assert not cmd[0].startswith("-"), f"{name}.{kind} leads with a flag"
+        # The prompt has to reach the agent somehow: as an argument or on stdin.
+        assert pengy.PROMPT in cmd or spec.get(f"{kind}_stdin"), f"{name}.{kind} drops the prompt"
+
+    # A resume that needs a session id needs a way to have captured one.
+    if pengy.SESSION in spec["resume"]:
+        assert spec.get("session_re"), f"{name} resumes by session id but never reads one"
+        assert re.compile(spec["session_re"]).groups == 1, f"{name}.session_re needs one group"
+
+    for key in ("leash", "off_leash"):
+        assert isinstance(spec[key], list), f"{name}.{key} must be a list"
+
+# opencode ignores the process working directory, so its adapter must pass --dir
+# explicitly. Without this it writes into whatever it decides the project root
+# is — which overnight means editing the wrong repo.
+assert pengy.DIR in pengy.AGENTS["opencode"]["run"], "opencode must be given an explicit --dir"
+assert pengy.DIR in pengy.AGENTS["opencode"]["resume"], "opencode resume must be given --dir"
+
+# droid prints its session id only in JSON output; the regex has to find it there.
+droid_json = '{"type":"result","session_id":"dd6744db-7818-4e53-9a21-7d3fd4954059","is_error":false}'
+found = re.search(pengy.AGENTS["droid"]["session_re"], droid_json)
+assert found and found.group(1) == "dd6744db-7818-4e53-9a21-7d3fd4954059", found
 
 
 # ------------------------------------------------- the loop, end to end --

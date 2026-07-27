@@ -14,7 +14,7 @@
 </div>
 
 ```bash
-curl -fsSL https://pengy.app/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/swaterhousesydney-star/pengy/main/install.sh | sh
 ```
 
 ---
@@ -48,29 +48,32 @@ Because no model vendor has a reason to build it. Anthropic has no commercial in
 ## Install
 
 ```bash
-curl -fsSL https://pengy.app/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/swaterhousesydney-star/pengy/main/install.sh | sh
 ```
 
 Or, if you'd rather use a package manager:
 
 ```bash
-uv tool install pengy      # or: pipx install pengy
+pipx install git+https://github.com/swaterhousesydney-star/pengy
 ```
 
 Or just take the file. It's one script with no dependencies:
 
 ```bash
-curl -fsSL https://pengy.app/pengy.py -o ~/.local/bin/pengy && chmod +x ~/.local/bin/pengy
+curl -fsSL https://raw.githubusercontent.com/swaterhousesydney-star/pengy/main/pengy.py -o ~/.local/bin/pengy && chmod +x ~/.local/bin/pengy
 ```
+
+> Not on PyPI: the name `pengy` there belongs to an unrelated project, so `pip install pengy`
+> gets you somebody else's package. Use one of the three commands above.
 
 Pengy needs Python 3.9+ and at least one agent CLI already installed and logged in. It does not want your API keys — it drives the subscriptions you already pay for.
 
 ```console
 $ pengy doctor
-pengy 0.1.0  ·  python 3.12.3  ·  linux
+pengy 0.2.0  ·  python 3.12.3  ·  linux
 ledger    ~/.local/state/pengy/ledger.json
 notify    notify-send
-agents    claude, codex, gemini
+agents    claude, codex, gemini, opencode, kimi, antigravity, droid
 parser    ok
 ```
 
@@ -87,7 +90,7 @@ pengy run "write the missing tests" --agent codex -C ~/code/checkout
 pengy run "get CI green" --off-leash
 
 # don't wait out the cap, hand the job to an agent that still has budget
-pengy run "refactor the parser" --agent claude --fallback codex
+pengy run "refactor the parser" --agent claude --fallback opencode
 
 # background it — survives closing the terminal, logs to a file
 pengy run "fix every failing test" --detach
@@ -97,13 +100,22 @@ pengy jobs
 pengy agents
 ```
 
-| Agent | Command | Resumes with |
-|---|---|---|
-| Claude Code | `claude` | `claude -c` |
-| Codex | `codex` | `codex exec resume --last` |
-| Gemini CLI | `gemini` | `gemini --resume latest` |
+| Agent | Binary | Resumes with | Notes |
+|---|---|---|---|
+| Claude Code | `claude` | `claude -c` | |
+| Codex | `codex` | `codex exec resume --last` | prompt goes over stdin — a bare one is read as a session id |
+| Gemini CLI | `gemini` | `gemini --resume latest` | needs `--skip-trust`, or the approval mode is silently downgraded |
+| OpenCode | `opencode` | `opencode run -c` | **must** be given `--dir`; it ignores the process working directory |
+| Kimi | `kimi` | `kimi --continue` | `--print` auto-approves tool calls — no edits-only mode exists |
+| Antigravity | `antigravity-cli` / `agy` | `agy -c` | |
+| Droid | `droid` | `droid exec -s <id>` | resumes by session id only, read back from its JSON output |
 
-Adding a fourth agent is [one dict entry](pengy.py). Pull requests welcome.
+Pengy finds these even when they're not on your `PATH` — `~/.opencode/bin`, `~/.factory/bin`,
+`/snap/bin` and friends are checked directly, because a detached job never sources your shell
+profile.
+
+Adding another agent is [one dict entry](pengy.py). Pull requests welcome — `test_pengy.py`
+checks the shape of every adapter, so a mistake in one shows up before a user finds it.
 
 ## Use it from inside your agent
 
@@ -195,11 +207,9 @@ python3 pengy.py doctor
 
 `pengy.py` is one file, standard library only, and intends to stay that way. The tests include a fake agent that really does cap and really does get resumed, because real caps arrive on the vendor's schedule rather than yours.
 
-The site in `site/` is static and also serves the installer, so a deploy copies the script in beside it:
-
-```bash
-cp pengy.py site/ && vercel deploy site --prod
-```
+`site/` is the landing page. The `pages` workflow publishes it to GitHub Pages along with
+`install.sh` and `pengy.py`, so once Pages is enabled (Settings → Pages → Source: GitHub Actions)
+the installer is also served from `https://swaterhousesydney-star.github.io/pengy/install.sh`.
 
 ## Licence
 

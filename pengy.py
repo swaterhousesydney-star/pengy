@@ -27,9 +27,11 @@ from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 PROMPT = "{prompt}"
+SESSION = "{session}"
+DIR = "{dir}"
 
 # --------------------------------------------------------------- agents --
 
@@ -62,13 +64,79 @@ AGENTS = {
         "leash": ["--approval-mode", "auto_edit"],
         "off_leash": ["--approval-mode", "yolo"],
     },
+    "opencode": {
+        "bin": "opencode",
+        # `-p` here is --password, not --print. `run` is already non-interactive.
+        # --dir is not optional: opencode ignores the process working directory
+        # and will happily write into whatever it decides the project root is.
+        "run": ["opencode", "run", "--dir", DIR, PROMPT],
+        "resume": ["opencode", "run", "--dir", DIR, "-c", PROMPT],
+        "leash": [],
+        "off_leash": ["--auto"],
+    },
+    "kimi": {
+        "bin": "kimi",
+        # -C is --continue; -c is an alias for --command, which is the prompt.
+        "run": ["kimi", "--print", "-w", DIR, "-p", PROMPT],
+        "resume": ["kimi", "--print", "-w", DIR, "--continue", "-p", PROMPT],
+        "leash": [],
+        "off_leash": ["--yolo"],
+        "leash_note": "kimi --print auto-approves tool calls — it has no edits-only mode.",
+    },
+    "antigravity": {
+        "bin": ["antigravity-cli", "agy"],  # snap ships antigravity-cli; the binary calls itself agy
+        "run": ["{bin}", "-p", PROMPT],
+        "resume": ["{bin}", "-c", "-p", PROMPT],
+        "leash": ["--mode", "accept-edits"],
+        "off_leash": ["--dangerously-skip-permissions"],
+    },
+    "droid": {
+        "bin": "droid",
+        # droid exec resumes by session id only — no --last. JSON output is the
+        # one place that id is reliably printed, so this adapter reads it back.
+        "run": ["droid", "exec", "-o", "json", "--cwd", DIR, PROMPT],
+        "resume": ["droid", "exec", "-o", "json", "--cwd", DIR, "-s", SESSION, PROMPT],
+        "session_re": r'"session_id"\s*:\s*"([0-9a-fA-F-]{36})"',
+        "leash": ["--auto", "low"],
+        "off_leash": ["--auto", "high", "--skip-permissions-unsafe"],
+    },
 }
 
 RESUME_PROMPT = "Continue where you left off. Do not restart work you already finished."
 
 
+# Agent CLIs install themselves outside the default PATH and rely on a shell
+# profile to add it. A detached job, a cron entry or a GUI-launched MCP host
+# never sources that profile, so look in the known install dirs too.
+EXTRA_BIN_DIRS = [
+    Path.home() / ".local/bin",
+    Path.home() / ".opencode/bin",
+    Path.home() / ".factory/bin",
+    Path.home() / ".npm-global/bin",
+    Path.home() / ".bun/bin",
+    Path.home() / ".deno/bin",
+    Path("/snap/bin"),
+    Path("/usr/local/bin"),
+    Path("/opt/homebrew/bin"),
+]
+
+
+def agent_bin(agent: str) -> str | None:
+    """Absolute path to an agent's binary, or None. Tries each candidate name."""
+    names = AGENTS[agent]["bin"]
+    for name in [names] if isinstance(names, str) else names:
+        found = shutil.which(name)
+        if found:
+            return found
+        for directory in EXTRA_BIN_DIRS:
+            for candidate in (directory / name, directory / f"{name}.exe"):
+                if candidate.is_file() and os.access(candidate, os.X_OK):
+                    return str(candidate)
+    return None
+
+
 def installed() -> list[str]:
-    return [a for a, spec in AGENTS.items() if shutil.which(spec["bin"])]
+    return [a for a in AGENTS if agent_bin(a)]
 
 
 # ------------------------------------------------------- the cap parser --
@@ -349,11 +417,19 @@ def say(msg: str) -> None:
     print(f"{tint}pengy{end} {msg}", file=sys.stderr, flush=True)
 
 
-def run_agent(agent: str, prompt: str, cwd: Path, resume: bool, off_leash: bool) -> tuple[int, str]:
+def run_agent(agent: str, prompt: str, cwd: Path, resume: bool, off_leash: bool,
+              session: str | None = None) -> tuple[int, str]:
     """Run one turn. Echoes the agent's output live, returns (exitcode, tail)."""
     spec = AGENTS[agent]
     template = spec["resume"] if resume else spec["run"]
-    cmd = [prompt if part == PROMPT else part for part in template]
+    names = spec["bin"]
+    binary = agent_bin(agent) or (names if isinstance(names, str) else names[0])
+
+    def sub(part: str) -> str:
+        return {PROMPT: prompt, SESSION: session or "", DIR: str(cwd)}.get(part, part)
+
+    cmd = [sub(part) for part in template]
+    cmd[0] = binary  # every template leads with the binary; use the resolved path
     key = "off_leash" if off_leash else "leash"
     cmd += spec.get(f"{key}_resume", spec[key]) if resume else spec[key]
     use_stdin = resume and spec.get("resume_stdin")
@@ -435,13 +511,30 @@ def _run_job(args: argparse.Namespace) -> int:
         print(detach(args, agent, cwd))
         return 0
 
+    note = AGENTS[agent].get("leash_note")
+    if note and not args.off_leash:
+        say(f"note: {note}")
+
     prompt = args.prompt
     started = time.time()
     waits = 0
     resume = False
+    session: str | None = None
 
     while True:
-        code, tail = run_agent(agent, prompt, cwd, resume, args.off_leash)
+        # Some agents resume only by session id. If we never captured one, a
+        # fresh run with the original prompt beats resuming into nothing.
+        if resume and SESSION in AGENTS[agent]["resume"] and not session:
+            say(f"no {agent} session id was captured — starting the job again instead.")
+            resume, prompt = False, args.prompt
+
+        code, tail = run_agent(agent, prompt, cwd, resume, args.off_leash, session)
+
+        session_re = AGENTS[agent].get("session_re")
+        if session_re:
+            found = re.search(session_re, tail)
+            if found:
+                session = found.group(1)
 
         if not is_capped(tail, code):
             write_quota(agent, "ok", None)
@@ -465,8 +558,11 @@ def _run_job(args: argparse.Namespace) -> int:
             if args.fallback in have:
                 say(f"{agent} is capped — handing the job to {args.fallback} (fresh context).")
                 notify("Pengy — switched agent", f"{agent} capped, {args.fallback} took over.")
-                agent, resume = args.fallback, False
+                agent, resume, session = args.fallback, False, None
                 prompt = args.prompt
+                note = AGENTS[agent].get("leash_note")
+                if note and not args.off_leash:
+                    say(f"note: {note}")
                 continue
             say(f"fallback '{args.fallback}' is not installed — ignoring it.")
 
@@ -553,7 +649,7 @@ def do_jobs(_args: argparse.Namespace) -> int:
             state = "done" if m.get("exit") == 0 else f"failed ({m.get('exit')})"
         elif not _alive(m.get("pid")):
             state = "gone"
-        print(f"{m.get('id', '?'):<18} {state:<14} {m.get('agent', '?'):<8} {m.get('prompt', '')[:52]}")
+        print(f"{m.get('id', '?'):<18} {state:<14} {m.get('agent', '?'):<12} {m.get('prompt', '')[:48]}")
     print(f"\nlogs in {jobs_dir()}")
     return 0
 
@@ -610,7 +706,7 @@ def _mcp_call(name: str, params: dict) -> str:
         led = read_ledger()
         lines = []
         for a in AGENTS:
-            if not shutil.which(AGENTS[a]["bin"]):
+            if not agent_bin(a):
                 continue
             entry = led.get(a, {})
             if entry.get("state") == "capped" and not quota_ok(a):
@@ -697,8 +793,8 @@ def do_mcp(_args: argparse.Namespace) -> int:
 def do_agents(_args: argparse.Namespace) -> int:
     led = read_ledger()
     have = installed()
-    for name, spec in AGENTS.items():
-        path = shutil.which(spec["bin"])
+    for name in AGENTS:
+        path = agent_bin(name)
         entry = led.get(name, {})
         if not path:
             state = "not installed"
@@ -709,7 +805,7 @@ def do_agents(_args: argparse.Namespace) -> int:
         else:
             state = "ok"
         mark = "*" if have and name == have[0] else " "
-        print(f"{mark} {name:<8} {state:<22} {path or ''}")
+        print(f"{mark} {name:<12} {state:<24} {path or ''}")
     if have:
         print("\n* default agent. Override with `pengy run --agent <name>`.")
     return 0

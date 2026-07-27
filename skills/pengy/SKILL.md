@@ -39,5 +39,5 @@ After starting a job, tell the user the job id and that `pengy jobs` shows progr
 Pengy isn't installed. One command, no dependencies:
 
 ```bash
-curl -fsSL https://pengy.app/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/swaterhousesydney-star/pengy/main/install.sh | sh
 ```

@@ -3,8 +3,8 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pengy"
-version = "0.1.0"
+name = "pengy-cli"
+version = "0.2.0"
 description = "Keeps your AI coding agents working after they hit the rate limit."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -21,7 +21,7 @@ classifiers = [
 dependencies = []
 
 [project.urls]
-Homepage = "https://pengy.app"
+Homepage = "https://github.com/swaterhousesydney-star/pengy"
 Source = "https://github.com/swaterhousesydney-star/pengy"
 Issues = "https://github.com/swaterhousesydney-star/pengy/issues"
 

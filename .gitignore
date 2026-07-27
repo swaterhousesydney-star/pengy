@@ -7,5 +7,6 @@ build/
 # internal strategy notes — not for the public repo
 notes/
 
-# copied in at deploy time so pengy.app/pengy.py serves the current version
+# copied in by the pages workflow at deploy time
 site/pengy.py
+site/install.sh

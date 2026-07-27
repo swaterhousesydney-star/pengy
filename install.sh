@@ -1,13 +1,15 @@
 #!/bin/sh
-# Pengy installer.  curl -fsSL https://pengy.app/install.sh | sh
+# Pengy installer.
+#   curl -fsSL https://raw.githubusercontent.com/swaterhousesydney-star/pengy/main/install.sh | sh
 #
 # Downloads one Python file to ~/.local/bin/pengy and makes it executable.
 # No dependencies, no virtualenv, no package manager. Read it before you pipe
 # it — that is the deal with every install script and this one is 60 lines.
 set -eu
 
-SRC="${PENGY_SRC:-https://pengy.app}"
-FALLBACK="https://raw.githubusercontent.com/swaterhousesydney-star/pengy/main"
+# Defaults to the repo itself, which always exists. PENGY_SRC points it at a
+# mirror or your own domain once you have one.
+SRC="${PENGY_SRC:-https://raw.githubusercontent.com/swaterhousesydney-star/pengy/main}"
 BIN="${PENGY_BIN:-$HOME/.local/bin}"
 
 say() { printf '\033[95mpengy\033[0m %s\n' "$1" >&2; }
@@ -37,7 +39,7 @@ TMP=$(mktemp) || die "could not create a temp file."
 trap 'rm -f "$TMP"' EXIT INT TERM
 
 say "downloading…"
-fetch "$SRC/pengy.py" "$TMP" || fetch "$FALLBACK/pengy.py" "$TMP" || die "download failed."
+fetch "$SRC/pengy.py" "$TMP" || die "could not download $SRC/pengy.py — check the URL and your connection."
 head -n 1 "$TMP" | grep -q '^#!/usr/bin/env python3' || die "that download does not look like pengy. Aborting."
 
 # --- install ----------------------------------------------------------------
