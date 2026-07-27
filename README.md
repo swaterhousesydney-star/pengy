@@ -17,6 +17,8 @@
 curl -fsSL https://raw.githubusercontent.com/swaterhousesydney-star/pengy/main/install.sh | sh
 ```
 
+<div align="center"><img src="site/assets/night.svg" width="760" alt="A night with Pengy: the cap hits at 1:15am, Pengy waits it out, resumes at 3am, and the work is finished by morning."></div>
+
 ---
 
 Every tool in this category sells you **visibility** — more terminals, faster diffs, all in one window. That is the consolation prize for having to sit there.

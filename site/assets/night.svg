@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 330" width="760" height="330" role="img" aria-label="A night with Pengy: the cap hits at 1:15am, Pengy waits it out and resumes at 3am, the work is finished by morning.">
+<style>
+  /* Everything is legible with no animation at all — GitHub renders SVG
+     statically in several places, so the still frame is the real deliverable
+     and the motion is a bonus on top of it. */
+  .bg   { fill: #0B0A0D; }
+  .card { fill: #141117; stroke: #262029; }
+  text  { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .t    { fill: #FF8AD9; font-size: 13px; }
+  .e    { fill: #F6F1F4; font-size: 13.5px; }
+  .q    { fill: #9C919B; font-size: 13.5px; }
+  .gold { fill: #F5C542; }
+  .head { fill: #F6F1F4; font-size: 15.5px; font-weight: 700;
+          font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Helvetica, sans-serif; }
+  .kick { fill: #FF3DBE; font-size: 10.5px; letter-spacing: .14em; }
+
+  /* A marker walks down the night, resting longest on the cap. */
+  .marker { fill: #FF3DBE; opacity: .10; animation: walk 13s steps(1, end) infinite; }
+  @keyframes walk {
+    0%,14%   { transform: translateY(0);   opacity: .10 }
+    15%,28%  { transform: translateY(28px) }
+    29%,58%  { transform: translateY(56px); opacity: .16 }
+    59%,72%  { transform: translateY(112px); opacity: .10 }
+    73%,100% { transform: translateY(140px) }
+  }
+  /* Pengy is awake by default; he only shuts his eyes across the cap. */
+  .asleep { opacity: 0; animation: asleep 13s infinite; }
+  .awake  { animation: awake 13s infinite; }
+  @keyframes asleep { 0%,28% { opacity: 0 } 31%,56% { opacity: 1 } 59%,100% { opacity: 0 } }
+  @keyframes awake  { 0%,28% { opacity: 1 } 31%,56% { opacity: 0 } 59%,100% { opacity: 1 } }
+  .breathe { animation: breathe 3.2s ease-in-out infinite; transform-origin: 50% 92%; }
+  @keyframes breathe { 0%,100% { transform: scale(1) } 50% { transform: scale(1.05) } }
+  .z { opacity: 0; animation: rise 2.6s linear infinite; }
+  .z2 { animation-delay: .85s } .z3 { animation-delay: 1.7s }
+  @keyframes rise {
+    0%   { opacity: 0; transform: translateY(6px) scale(.7) }
+    22%  { opacity: .95 }
+    100% { opacity: 0; transform: translateY(-24px) scale(1.25) }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .marker, .asleep, .awake, .breathe, .z { animation: none }
+    .asleep { opacity: 0 } .awake { opacity: 1 }
+  }
+</style>
+
+<rect class="bg" width="760" height="330" rx="14"/>
+<text class="kick" x="30" y="34">A NIGHT WITH PENGY</text>
+<text class="head" x="30" y="58">The cap hits at 1:15am. You find out at breakfast.</text>
+
+<rect class="card" x="30" y="76" width="700" height="228" rx="12" stroke-width="1"/>
+<rect class="marker" x="31" y="88" width="698" height="26" rx="6"/>
+
+<text class="t"      x="50" y="106">23:40</text>
+<text class="e"     x="152" y="106">You hand Pengy the job and close the laptop.</text>
+
+<text class="t"      x="50" y="134">00:52</text>
+<text class="e"     x="152" y="134">Claude finishes the API layer. <tspan class="q">Nothing needs you.</tspan></text>
+
+<text class="t gold" x="50" y="162">01:15</text>
+<text class="e"     x="152" y="162">Claude hits its 5-hour cap. <tspan class="q">Pengy reads the reset time.</tspan></text>
+
+<text class="t q"    x="50" y="190">01:15—03:00</text>
+<text class="q"     x="152" y="190">Nothing. This is the part every other tool gets wrong.</text>
+
+<text class="t gold" x="50" y="218">03:00</text>
+<text class="e"     x="152" y="218">Window resets. Pengy resumes exactly where it stopped.</text>
+
+<text class="t"      x="50" y="246">07:50</text>
+<text class="e"     x="152" y="246">One message on your phone.</text>
+
+<line x1="50" y1="264" x2="710" y2="264" stroke="#262029" stroke-width="1"/>
+<text class="e" x="50" y="288">Seven hours of work. One notification. <tspan class="gold">No 3am alerts.</tspan></text>
+
+<g transform="translate(628 232) scale(0.86)">
+  <g class="breathe">
+    <ellipse cx="9"  cy="40" rx="5" ry="11" fill="#FF3DBE" transform="rotate(15 9 40)"/>
+    <ellipse cx="55" cy="40" rx="5" ry="11" fill="#FF3DBE" transform="rotate(-15 55 40)"/>
+    <ellipse cx="32" cy="38" rx="22" ry="24" fill="#FF3DBE"/>
+    <ellipse cx="32" cy="42" rx="14" ry="18" fill="#FFD9F1"/>
+    <circle  cx="32" cy="22" r="18" fill="#FF3DBE"/>
+    <g class="awake">
+      <ellipse cx="25" cy="21" rx="6.5" ry="7" fill="#fff"/>
+      <ellipse cx="39" cy="21" rx="6.5" ry="7" fill="#fff"/>
+      <circle cx="26" cy="22" r="3.2" fill="#14040E"/>
+      <circle cx="38" cy="22" r="3.2" fill="#14040E"/>
+    </g>
+    <g class="asleep">
+      <path d="M19.5 20 q5.5 5.5 11 0" stroke="#14040E" stroke-width="2.1" fill="none" stroke-linecap="round"/>
+      <path d="M33.5 20 q5.5 5.5 11 0" stroke="#14040E" stroke-width="2.1" fill="none" stroke-linecap="round"/>
+    </g>
+    <path d="M27 31 q5 4 10 0" stroke="#14040E" stroke-width="2.2" fill="none" stroke-linecap="round"/>
+    <path d="M32 27 l-5 3 h10 z" fill="#F5C542"/>
+  </g>
+  <g class="asleep">
+    <text class="gold z"    x="56" y="6"  font-size="13">z</text>
+    <text class="gold z2 z" x="66" y="1"  font-size="15">z</text>
+    <text class="gold z3 z" x="78" y="-4" font-size="17">z</text>
+  </g>
+</g>
+</svg>

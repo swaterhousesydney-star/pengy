@@ -148,6 +148,35 @@ found = re.search(pengy.AGENTS["droid"]["session_re"], droid_json)
 assert found and found.group(1) == "dd6744db-7818-4e53-9a21-7d3fd4954059", found
 
 
+# ------------------------------------------------ refusing bad input --
+
+# Each of these used to be found out later than it should have been: an empty
+# prompt burned a real agent call, and a mistyped --fallback only surfaced at
+# 3am when the cap finally arrived and the rescue agent did not exist.
+def _run(*argv):
+    return pengy.main(["run", *argv])
+
+
+assert _run("   ", "-a", "claude", "-C", ".") == 2, "an empty prompt must not reach an agent"
+assert _run("x", "-a", "claude", "--fallback", "nonesuch", "-C", ".") == 2, "unknown fallback"
+assert _run("x", "-a", "claude", "--fallback", "claude", "-C", ".") == 2, "fallback == agent"
+assert _run("x", "-a", "claude", "-C", "/nope/nope/nope") == 2, "missing directory"
+
+
+# The UI polls a running job every couple of seconds. Reading the whole log
+# each time costs ~110ms on a 20MB overnight log — 24 minutes of pure re-reading
+# across one night — so only the tail is scanned, and it must still find the
+# status lines that live at the end.
+with tempfile.TemporaryDirectory() as tmp:
+    big = Path(tmp) / "big.log"
+    big.write_text("chatter\n" * 300_000 + "pengy claude capped. Resuming at 03:00 — 1h 45m to go.\n")
+    assert big.stat().st_size > 2_000_000
+    started = time.time()
+    phase, note = pengy._job_phase(pengy._tail_bytes(big))
+    assert time.time() - started < 0.05, "tail scan should be instant regardless of log size"
+    assert phase == "capped" and "03:00" in note, (phase, note)
+
+
 # ------------------------------------------------- the loop, end to end --
 
 # A fake agent that caps once and succeeds on resume. Real caps arrive on the

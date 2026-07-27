@@ -32,7 +32,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 PROMPT = "{prompt}"
 SESSION = "{session}"
@@ -500,10 +500,27 @@ def _run_job(args: argparse.Namespace) -> int:
         say(f"'{agent}' is not installed (looked for `{AGENTS[agent]['bin']}` on PATH)")
         return 127
 
+    if not args.prompt.strip():
+        say("nothing to do — give me a job.")
+        return 2
+
     cwd = Path(args.dir).expanduser().resolve()
     if not cwd.is_dir():
         say(f"no such directory: {cwd}")
         return 2
+
+    # Checked now rather than at 3am, when the cap arrives and the fallback
+    # turns out to be a typo.
+    if args.fallback:
+        if args.fallback not in AGENTS:
+            say(f"unknown fallback '{args.fallback}'. Known: {', '.join(AGENTS)}")
+            return 2
+        if args.fallback == agent:
+            say(f"fallback and agent are both '{agent}' — that would hand the job to itself.")
+            return 2
+        if args.fallback not in have:
+            say(f"fallback '{args.fallback}' is not installed, so a cap would just stop the job.")
+            return 2
 
     if args.off_leash and not args.yes and sys.stdin.isatty():
         if not (cwd / ".git").exists():
@@ -643,7 +660,7 @@ def detach(args: argparse.Namespace, agent: str, cwd: Path) -> str:
 
 
 def do_jobs(_args: argparse.Namespace) -> int:
-    metas = sorted((job_meta(p.stem) for p in jobs_dir().glob("*.json")),
+    metas = sorted((m for m in (job_meta(p.stem) for p in jobs_dir().glob("*.json")) if m.get("id")),
                    key=lambda m: m.get("started", ""), reverse=True)
     if not metas:
         print("no jobs yet. `pengy run \"…\" --detach` starts one.")
@@ -665,6 +682,10 @@ def _alive(pid) -> bool:
     try:
         os.kill(pid, 0)  # signal 0 only checks for existence
         return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # it exists, we just may not signal it
     except (OSError, TypeError):
         return False
 
@@ -721,7 +742,7 @@ def _mcp_call(name: str, params: dict) -> str:
         return "\n".join(lines) or "No agent CLIs are installed on this machine."
 
     if name == "pengy_jobs":
-        metas = sorted((job_meta(p.stem) for p in jobs_dir().glob("*.json")),
+        metas = sorted((m for m in (job_meta(p.stem) for p in jobs_dir().glob("*.json")) if m.get("id")),
                        key=lambda m: m.get("started", ""), reverse=True)[:20]
         return json.dumps(metas, indent=2) if metas else "No jobs."
 
@@ -798,18 +819,26 @@ def do_mcp(_args: argparse.Namespace) -> int:
 # python3-tk is a separate package on most Linux distributions, and "zero
 # dependencies" has to stay true. This also inherits the brand from the site.
 
-PENGY_SVG = """<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+PENGY_SVG = """<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" class="peng">
+<g class="wings">
+<ellipse cx="9" cy="40" rx="5" ry="11" fill="#FF3DBE" transform="rotate(15 9 40)"/>
+<ellipse cx="55" cy="40" rx="5" ry="11" fill="#FF3DBE" transform="rotate(-15 55 40)"/>
+</g>
 <ellipse cx="32" cy="38" rx="22" ry="24" fill="#FF3DBE"/>
 <ellipse cx="32" cy="42" rx="14" ry="18" fill="#FFD9F1"/>
 <circle cx="32" cy="22" r="18" fill="#FF3DBE"/>
+<g class="eyes">
 <ellipse cx="25" cy="21" rx="6.5" ry="7" fill="#fff"/>
 <ellipse cx="39" cy="21" rx="6.5" ry="7" fill="#fff"/>
 <circle cx="26" cy="22" r="3.2" fill="#14040E"/>
 <circle cx="38" cy="22" r="3.2" fill="#14040E"/>
+</g>
+<g class="lids">
+<path d="M19.5 20 q5.5 5.5 11 0" stroke="#14040E" stroke-width="2.1" fill="none" stroke-linecap="round"/>
+<path d="M33.5 20 q5.5 5.5 11 0" stroke="#14040E" stroke-width="2.1" fill="none" stroke-linecap="round"/>
+</g>
 <path d="M27 31 q5 4 10 0" stroke="#14040E" stroke-width="2.2" fill="none" stroke-linecap="round"/>
 <path d="M32 27 l-5 3 h10 z" fill="#F5C542"/>
-<ellipse cx="9" cy="40" rx="5" ry="11" fill="#FF3DBE" transform="rotate(15 9 40)"/>
-<ellipse cx="55" cy="40" rx="5" ry="11" fill="#FF3DBE" transform="rotate(-15 55 40)"/>
 </svg>"""
 
 CHAT_HTML = r"""<!doctype html>
@@ -861,6 +890,31 @@ font:inherit;font-weight:750;cursor:pointer;flex:none}
 button.send:hover{background:var(--soft)}
 button.send:disabled{opacity:.45;cursor:not-allowed}
 .hint{color:var(--dim);font-size:.76rem;margin-top:.5rem}
+.peng{overflow:visible}
+.peng .lids{opacity:0}
+[data-mood=idle] .peng .lids{animation:blinkOn 6s infinite}
+[data-mood=idle] .peng .eyes{animation:blinkOff 6s infinite}
+@keyframes blinkOn{0%,95%,100%{opacity:0}96.5%,98.5%{opacity:1}}
+@keyframes blinkOff{0%,95%,100%{opacity:1}96.5%,98.5%{opacity:0}}
+[data-mood=working] .peng{animation:bob 1.5s ease-in-out infinite;transform-origin:50% 90%}
+@keyframes bob{0%,100%{transform:translateY(0) rotate(0)}50%{transform:translateY(-2px) rotate(-2.5deg)}}
+[data-mood=sleeping] .peng .eyes{opacity:0}
+[data-mood=sleeping] .peng .lids{opacity:1}
+[data-mood=sleeping] .peng{animation:breathe 3.6s ease-in-out infinite;transform-origin:50% 95%}
+@keyframes breathe{0%,100%{transform:scale(1)}50%{transform:scale(1.05)}}
+.nap{position:relative;display:flex;align-items:center;gap:1.3rem;margin-top:.9rem;padding:1.2rem 1.4rem;
+border:1px solid rgba(245,197,66,.32);background:linear-gradient(150deg,rgba(245,197,66,.09),transparent 70%),#0E0C12;border-radius:16px}
+.nap .peng{width:70px;height:70px;flex:none}
+.napt{font-size:1.02rem;font-weight:620}
+.napclock{font-family:var(--mono);font-size:1.9rem;letter-spacing:-.02em;color:var(--gold);line-height:1.15;margin:.15rem 0}
+.naps{color:var(--muted);font-size:.87rem}
+.zzz{position:absolute;left:78px;top:2px;font-family:var(--mono);font-size:1rem;color:var(--gold)}
+.zzz span{position:absolute;opacity:0;animation:rise 3s linear infinite}
+.zzz span:nth-child(2){animation-delay:1s;left:9px}
+.zzz span:nth-child(3){animation-delay:2s;left:18px}
+@keyframes rise{0%{opacity:0;transform:translateY(6px) scale(.7)}
+25%{opacity:.95}100%{opacity:0;transform:translateY(-26px) scale(1.25)}}
+@media (prefers-reduced-motion:reduce){.peng,.zzz span{animation:none!important}}
 </style></head><body>
 <header>__SVG__<div class="name">Pengy</div><div class="status"><span class="dot idle" id="dot"></span><span id="st">idle</span></div></header>
 <div id="log"></div>
@@ -902,7 +956,25 @@ function me(text) {
   t.querySelector('.bub').textContent = text; $('#log').appendChild(t); scroll();
 }
 function scroll(){ $('#log').scrollTop = $('#log').scrollHeight; }
-function setDot(cls, label){ $('#dot').className = 'dot ' + cls; $('#st').textContent = label; }
+function setDot(cls, label){ $('#dot').className = 'dot ' + cls; $('#st').textContent = label;
+  document.body.dataset.mood = cls === 'work' ? 'working' : cls === 'cap' ? 'sleeping' : 'idle'; }
+function nap(agent, resetsAt) {
+  const card = document.createElement('div'); card.className = 'nap';
+  card.innerHTML = `<div class="zzz"><span>z</span><span>z</span><span>z</span></div>${AV}
+    <div><div class="napt">${agent} is capped. I'll wait.</div>
+    <div class="napclock">—</div><div class="naps"></div></div>`;
+  const clock = card.querySelector('.napclock'), sub = card.querySelector('.naps');
+  const when = new Date(resetsAt);
+  sub.textContent = 'resuming at ' + when.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+  const tick = () => {
+    let left = Math.max(0, (when - new Date()) / 1000);
+    if (!left) { clock.textContent = 'now'; return; }
+    const h = Math.floor(left/3600), m = Math.floor(left%3600/60), sec = Math.floor(left%60);
+    clock.textContent = (h ? h + 'h ' : '') + m + 'm ' + String(sec).padStart(2,'0') + 's';
+    card.dataset.t = setTimeout(tick, 1000);
+  };
+  tick(); return card;
+}
 
 async function boot() {
   const s = await api('/api/state');
@@ -942,7 +1014,11 @@ function watch(id) {
     if (r.text) { seen = r.pos; box.textContent = (box.textContent + r.text).slice(-6000); box.scrollTop = box.scrollHeight; }
     if (r.phase && r.phase !== lastState) {
       lastState = r.phase;
-      if (r.phase === 'capped') { setDot('cap','waiting out a cap'); say(r.note || "Capped. I'll wait for the window and resume."); }
+      if (r.phase === 'capped') {
+        setDot('cap','asleep, waiting out a cap');
+        const t = say(r.resets_at ? '' : (r.note || "Capped. I'll wait for the window and resume."));
+        if (r.resets_at) { t.querySelector('.bub').appendChild(nap(r.agent || 'the agent', r.resets_at)); scroll(); }
+      }
       if (r.phase === 'resumed') { setDot('work','working'); say('Window reset. Picking it back up.'); }
     }
     if (r.state !== 'running') {
@@ -989,12 +1065,25 @@ def _ui_state() -> dict:
         if capped and entry.get("resetsAt"):
             until = datetime.fromisoformat(entry["resetsAt"]).astimezone().strftime("%H:%M")
         agents.append({"name": name, "installed": bool(agent_bin(name)), "capped": capped, "until": until})
-    jobs = sorted((job_meta(p.stem) for p in jobs_dir().glob("*.json")),
+    jobs = sorted((m for m in (job_meta(p.stem) for p in jobs_dir().glob("*.json")) if m.get("id")),
                   key=lambda m: m.get("started", ""), reverse=True)[:10]
     for j in jobs:
         if j.get("state") == "running" and not _alive(j.get("pid")):
             j["state"] = "gone"
     return {"cwd": os.getcwd(), "agents": agents, "jobs": jobs}
+
+
+def _tail_bytes(path: Path, limit: int = 65536) -> str:
+    """Last `limit` bytes of a file. Pengy's own status lines are always near
+    the end, and re-reading a 20MB overnight log every two seconds is not free."""
+    try:
+        size = path.stat().st_size
+        with path.open("r", errors="replace") as fh:
+            if size > limit:
+                fh.seek(size - limit)
+            return fh.read()
+    except OSError:
+        return ""
 
 
 def _ui_log(jid: str, pos: int) -> dict:
@@ -1008,7 +1097,7 @@ def _ui_log(jid: str, pos: int) -> dict:
             pos = fh.tell()
     except OSError:
         pass
-    whole = path.read_text(errors="replace") if path.exists() else ""
+    whole = _tail_bytes(path)
     phase, note = _job_phase(whole)
     state = meta.get("state", "running")
     if state == "running" and not _alive(meta.get("pid")):
@@ -1018,8 +1107,14 @@ def _ui_log(jid: str, pos: int) -> dict:
         if "finished in" in line or "needs you" in line or "did not say when" in line:
             summary = line.split("pengy ", 1)[-1].strip()
             break
+    # The countdown is driven by the ledger's parsed reset time, not by the
+    # log line — a detached job only writes that line every 15 minutes.
+    agent = meta.get("agent")
+    entry = read_ledger().get(agent, {}) if agent else {}
+    resets_at = entry.get("resetsAt") if entry.get("state") == "capped" else None
     return {"text": text, "pos": pos, "state": state, "exit": meta.get("exit"),
-            "phase": phase, "note": note, "summary": summary}
+            "phase": phase, "note": note, "summary": summary,
+            "agent": agent, "resets_at": resets_at}
 
 
 def _ui_run(body: dict) -> dict:
