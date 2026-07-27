@@ -153,14 +153,16 @@ assert found and found.group(1) == "dd6744db-7818-4e53-9a21-7d3fd4954059", found
 # Each of these used to be found out later than it should have been: an empty
 # prompt burned a real agent call, and a mistyped --fallback only surfaced at
 # 3am when the cap finally arrived and the rescue agent did not exist.
+# These must hold on a machine with no agent CLIs at all — CI is exactly that,
+# and a typo should be reported as a typo rather than as "no agents found".
 def _run(*argv):
     return pengy.main(["run", *argv])
 
 
-assert _run("   ", "-a", "claude", "-C", ".") == 2, "an empty prompt must not reach an agent"
-assert _run("x", "-a", "claude", "--fallback", "nonesuch", "-C", ".") == 2, "unknown fallback"
-assert _run("x", "-a", "claude", "--fallback", "claude", "-C", ".") == 2, "fallback == agent"
-assert _run("x", "-a", "claude", "-C", "/nope/nope/nope") == 2, "missing directory"
+assert _run("   ", "-C", ".") == 2, "an empty prompt must not reach an agent"
+assert _run("x", "-C", str(Path(tempfile.gettempdir()) / "pengy-no-such-dir")) == 2, "missing directory"
+assert _run("x", "-a", "nonesuch", "-C", ".") == 2, "unknown agent"
+assert _run("x", "--fallback", "nonesuch", "-C", ".") == 2, "unknown fallback"
 
 
 # The UI polls a running job every couple of seconds. Reading the whole log
@@ -203,6 +205,10 @@ with tempfile.TemporaryDirectory() as tmp:
         "leash": [],
         "off_leash": [],
     }
+
+    # Needs a real installed agent, so it lives here with the fake one.
+    assert pengy.main(["run", "x", "-a", "fake", "--fallback", "fake", "-C", str(tmp)]) == 2, \
+        "handing a job to itself is not a fallback"
 
     started = time.time()
     code = pengy.main(["run", "build the thing", "-a", "fake", "-C", str(tmp)])

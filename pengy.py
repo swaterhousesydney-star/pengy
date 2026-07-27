@@ -487,19 +487,8 @@ def sleep_until(deadline: datetime, agent: str) -> None:
 
 
 def _run_job(args: argparse.Namespace) -> int:
-    have = installed()
-    if not have:
-        say("no agent CLIs found. Install one of: " + ", ".join(AGENTS))
-        return 127
-
-    agent = args.agent or have[0]
-    if agent not in AGENTS:
-        say(f"unknown agent '{agent}'. Known: {', '.join(AGENTS)}")
-        return 2
-    if agent not in have:
-        say(f"'{agent}' is not installed (looked for `{AGENTS[agent]['bin']}` on PATH)")
-        return 127
-
+    # What you typed is checked before what you have installed, so a typo is
+    # reported as a typo rather than hiding behind "no agents found".
     if not args.prompt.strip():
         say("nothing to do — give me a job.")
         return 2
@@ -509,12 +498,26 @@ def _run_job(args: argparse.Namespace) -> int:
         say(f"no such directory: {cwd}")
         return 2
 
+    if args.agent and args.agent not in AGENTS:
+        say(f"unknown agent '{args.agent}'. Known: {', '.join(AGENTS)}")
+        return 2
+    if args.fallback and args.fallback not in AGENTS:
+        say(f"unknown fallback '{args.fallback}'. Known: {', '.join(AGENTS)}")
+        return 2
+
+    have = installed()
+    if not have:
+        say("no agent CLIs found. Install one of: " + ", ".join(AGENTS))
+        return 127
+
+    agent = args.agent or have[0]
+    if agent not in have:
+        say(f"'{agent}' is not installed (looked for `{AGENTS[agent]['bin']}` on PATH)")
+        return 127
+
     # Checked now rather than at 3am, when the cap arrives and the fallback
     # turns out to be a typo.
     if args.fallback:
-        if args.fallback not in AGENTS:
-            say(f"unknown fallback '{args.fallback}'. Known: {', '.join(AGENTS)}")
-            return 2
         if args.fallback == agent:
             say(f"fallback and agent are both '{agent}' — that would hand the job to itself.")
             return 2
