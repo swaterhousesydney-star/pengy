@@ -15,6 +15,7 @@ interval and waking into a still-capped agent at 4am.
 from __future__ import annotations
 
 import argparse
+import base64
 import hmac
 import json
 import os
@@ -32,7 +33,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-__version__ = "0.4.0"
+__version__ = "0.6.0"
 
 PROMPT = "{prompt}"
 SESSION = "{session}"
@@ -693,10 +694,150 @@ def _alive(pid) -> bool:
         return False
 
 
+# ---------------------------------------------------------------- swarm --
+
+# Several agents, one goal, at the same time. There is no conductor process:
+# every agent reads the same board and claims its own work off it. The board is
+# a directory of plain markdown, one file per agent, and an agent writes only
+# its own — so two agents posting at the same moment cannot lose each other's
+# lines, which a single shared file edited by tools would do silently at 3am.
+
+SWARM_BRIEF = """You are `{me}`, one of {n} coding agents working this goal at the same time.
+The others are: {peers}. Nobody is in charge. The board is how you stay out of
+each other's way.
+
+GOAL
+{goal}
+
+THE BOARD — .pengy/board/
+Read it before you do anything, and whenever you want to know what the others are up to:
+
+    cat .pengy/board/*.md
+
+Write only your own lane, `.pengy/board/{me}.md`, and only by adding lines to the end.
+You are the only writer of that file, so your normal file-editing tool is fine for it.
+Never write another agent's lane: two writers on one file lose each other's lines
+silently. Include the UTC date and time on every entry, or an overnight board sorts
+into the wrong order. If you have a shell, this appends one:
+
+    printf '%s\\n' "- $(date -u +'%Y-%m-%d %H:%M') CLAIM src/auth/* — moving to the new SDK" >> .pengy/board/{me}.md
+
+POST
+- CLAIM    before you touch anything. What you are taking, in one line. Keep it small.
+- NOTE     anything the others must know: an interface you changed, a decision you made.
+- BLOCKED  you need something another agent holds. Say what, then go do something else.
+- DONE     a piece has landed.
+
+RULES
+Read the board first. If a claim overlaps yours, take something else — the earlier claim
+wins. Stay inside what you claimed; do not refactor across someone else's area. If the
+goal already looks finished, post that and stop rather than inventing work.
+"""
+
+
+def board_dir(cwd: Path) -> Path:
+    d = cwd / ".pengy" / "board"
+    d.mkdir(parents=True, exist_ok=True)
+    ignore = d.parent / ".gitignore"
+    if not ignore.exists():
+        ignore.write_text("*\n")  # the board is scratch, not source
+    return d
+
+
+def read_board(cwd: Path) -> str:
+    """Every lane merged into one chronology. Read-only: the lanes are the truth,
+    so there is nothing to regenerate and no writer to serialise against."""
+    rows = []
+    for lane in sorted((cwd / ".pengy" / "board").glob("*.md")):
+        try:
+            text = lane.read_text(errors="replace")
+        except OSError:
+            continue
+        stamp = ""
+        for line in text.splitlines():
+            if not line.strip():
+                continue
+            # A dated stamp sorts as a string exactly as it sorts in time. Bare
+            # HH:MM is still read, from boards written before dates were asked
+            # for — but it is what makes an overnight swarm sort 00:15 above
+            # 23:40, so the brief now asks for the date.
+            found = re.match(r"\s*[-*]?\s*(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}|\d{2}:\d{2})", line)
+            if found:
+                stamp = found.group(1)
+            # A continuation line inherits its entry's time so it sorts underneath
+            # it rather than floating to the top of the whole board.
+            rows.append((stamp, lane.stem, line.strip()))
+    rows.sort(key=lambda r: r[0])
+    return "\n".join(f"{who:<11} {text}" for _, who, text in rows) or "(nothing on the board yet)"
+
+
+def start_swarm(goal: str, agents: list[str], cwd: Path, off_leash: bool,
+                max_waits: int = 4) -> list[str]:
+    """Start one detached job per agent, all on `goal`. Returns the job ids."""
+    goal = goal.strip()
+    if not goal:
+        raise ValueError("a swarm needs a goal.")
+    if not cwd.is_dir():
+        raise ValueError(f"no such directory: {cwd}")
+    have = installed()
+    agents = list(dict.fromkeys(agents or have))  # dedupe: one lane per agent
+    for name in agents:
+        if name not in AGENTS:
+            raise ValueError(f"unknown agent {name!r}. Known: {', '.join(AGENTS)}")
+        if name not in have:
+            raise ValueError(f"'{name}' is not installed, so it cannot join the swarm.")
+    if len(agents) < 2:
+        raise ValueError("a swarm needs at least two installed agents — `pengy run` is the one-agent case.")
+
+    board_dir(cwd)
+    ids = []
+    for name in agents:
+        # A capped agent is started anyway: its job waits out the window and joins
+        # the swarm late, which is the whole point of Pengy being underneath this.
+        brief = SWARM_BRIEF.format(me=name, n=len(agents), goal=goal,
+                                   peers=", ".join(a for a in agents if a != name))
+        job = argparse.Namespace(prompt=brief, off_leash=off_leash,
+                                 max_waits=max_waits, fallback=None)
+        jid = detach(job, name, cwd)
+        patch_job(jid, prompt=goal, lane=name)  # the job list shows the goal, not the brief
+        ids.append(jid)
+    return ids
+
+
+def do_swarm(args: argparse.Namespace) -> int:
+    cwd = Path(args.dir).expanduser().resolve()
+    if args.off_leash and not args.yes and sys.stdin.isatty() and not (cwd / ".git").exists():
+        say(f"off the leash in a non-git directory: {cwd}")
+        say("every agent in the swarm can run commands here, at once. Continue? [y/N] ")
+        if input().strip().lower() not in ("y", "yes"):
+            return 1
+    try:
+        ids = start_swarm(args.prompt, [a.strip() for a in (args.agents or "").split(",") if a.strip()],
+                          cwd, args.off_leash, args.max_waits)
+    except ValueError as exc:
+        say(str(exc))
+        return 2
+    say(f"{len(ids)} agents on the same goal. They coordinate through {cwd / '.pengy/board'}")
+    say(f"{DIM}pengy board -f -C {cwd}{OFF}")
+    return 0
+
+
+def do_board(args: argparse.Namespace) -> int:
+    cwd = Path(args.dir).expanduser().resolve()
+    while True:
+        text = read_board(cwd)
+        if args.follow and sys.stdout.isatty():
+            print("\033[H\033[2J", end="")
+        print(text, flush=True)
+        if not args.follow:
+            return 0
+        time.sleep(3)
+
+
 # ------------------------------------------------------------------ mcp --
 
 # One stdio MCP server, so every host that speaks MCP — Claude Code, Codex,
-# Gemini CLI, Cursor — gets the same three tools with no per-host code.
+# Gemini CLI, Cursor — gets the same five tools with no per-host code.
 
 MCP_TOOLS = [
     {
@@ -726,6 +867,32 @@ MCP_TOOLS = [
         "name": "pengy_jobs",
         "description": "Status of background jobs Pengy is running or has run.",
         "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "pengy_swarm",
+        "description": "Put several coding agents on the same goal at once, in the background. "
+                       "They coordinate by claiming work on a shared board rather than being "
+                       "assigned it, so no plan is needed up front. Each one survives its own "
+                       "usage cap independently. Read progress with pengy_board.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "prompt": {"type": "string", "description": "The goal. Every agent gets this one."},
+                "agents": {"type": "array", "items": {"type": "string", "enum": list(AGENTS)},
+                           "description": "Defaults to every installed agent."},
+                "dir": {"type": "string", "description": "Working directory. Defaults to the current one."},
+            },
+            "required": ["prompt"],
+        },
+    },
+    {
+        "name": "pengy_board",
+        "description": "The swarm's shared board for a directory: who claimed what, what landed, "
+                       "what is blocked. Every agent's lane, merged into one chronology.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"dir": {"type": "string", "description": "Working directory. Defaults to the current one."}},
+        },
     },
 ]
 
@@ -772,6 +939,20 @@ def _mcp_call(name: str, params: dict) -> str:
         return (f"Started job {jid} on {agent} in {cwd}.\n"
                 f"It survives usage caps and outlives this conversation. "
                 f"Check it with pengy_jobs.")
+
+    if name == "pengy_board":
+        return read_board(Path(params.get("dir") or ".").expanduser().resolve())
+
+    if name == "pengy_swarm":
+        cwd = Path(params.get("dir") or ".").expanduser().resolve()
+        ids = start_swarm(
+            params.get("prompt") or "", params.get("agents") or [], cwd,
+            # Same rule as pengy_run, and it matters more here: a swarm off the
+            # leash is several bypass-mode agents in one directory at once.
+            off_leash=os.environ.get("PENGY_MCP_ALLOW_OFF_LEASH") == "1",
+        )
+        return (f"Swarm of {len(ids)} started in {cwd} — jobs {', '.join(ids)}.\n"
+                f"They claim work off .pengy/board/ as they go. Read it with pengy_board.")
 
     raise ValueError(f"Unknown tool: {name}")
 
@@ -822,27 +1003,17 @@ def do_mcp(_args: argparse.Namespace) -> int:
 # python3-tk is a separate package on most Linux distributions, and "zero
 # dependencies" has to stay true. This also inherits the brand from the site.
 
-PENGY_SVG = """<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" class="peng">
-<g class="wings">
-<ellipse cx="9" cy="40" rx="5" ry="11" fill="#FF3DBE" transform="rotate(15 9 40)"/>
-<ellipse cx="55" cy="40" rx="5" ry="11" fill="#FF3DBE" transform="rotate(-15 55 40)"/>
-</g>
-<ellipse cx="32" cy="38" rx="22" ry="24" fill="#FF3DBE"/>
-<ellipse cx="32" cy="42" rx="14" ry="18" fill="#FFD9F1"/>
-<circle cx="32" cy="22" r="18" fill="#FF3DBE"/>
-<g class="eyes">
-<ellipse cx="25" cy="21" rx="6.5" ry="7" fill="#fff"/>
-<ellipse cx="39" cy="21" rx="6.5" ry="7" fill="#fff"/>
-<circle cx="26" cy="22" r="3.2" fill="#14040E"/>
-<circle cx="38" cy="22" r="3.2" fill="#14040E"/>
-</g>
-<g class="lids">
-<path d="M19.5 20 q5.5 5.5 11 0" stroke="#14040E" stroke-width="2.1" fill="none" stroke-linecap="round"/>
-<path d="M33.5 20 q5.5 5.5 11 0" stroke="#14040E" stroke-width="2.1" fill="none" stroke-linecap="round"/>
-</g>
-<path d="M27 31 q5 4 10 0" stroke="#14040E" stroke-width="2.2" fill="none" stroke-linecap="round"/>
-<path d="M32 27 l-5 3 h10 z" fill="#F5C542"/>
-</svg>"""
+# One face everywhere: the same artwork is the favicon, the window, the app
+# menu icon and the thing floating over your desktop. It lives base64 at the
+# foot of this file so `pengy.py` is still one file with nothing to fetch.
+
+
+def icon_png(small: bool = False) -> bytes:
+    return base64.b64decode(PENGY_ICON_SMALL if small else PENGY_ICON)
+
+
+def icon_img(cls: str = "peng") -> str:
+    return f'<img class="{cls}" src="/pengy.png" alt="Pengy">'
 
 CHAT_HTML = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -850,97 +1021,299 @@ CHAT_HTML = r"""<!doctype html>
 <title>Pengy</title>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-:root{--bg:#0B0A0D;--raise:#141117;--line:#262029;--ink:#F6F1F4;--muted:#9C919B;
---dim:#6B626C;--pink:#FF3DBE;--soft:#FF8AD9;--gold:#F5C542;
---mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-body{background:var(--bg);color:var(--ink);font:16px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;
-height:100vh;display:flex;flex-direction:column;-webkit-font-smoothing:antialiased}
-header{display:flex;align-items:center;gap:.75rem;padding:.85rem 1.1rem;border-bottom:1px solid var(--line);
-background:rgba(11,10,13,.9);backdrop-filter:blur(12px);flex:none}
-header svg{width:34px;height:34px;flex:none}
-.name{font-weight:830;letter-spacing:-.03em;font-size:1.1rem}
-.status{margin-left:auto;font-family:var(--mono);font-size:.72rem;letter-spacing:.07em;text-transform:uppercase;color:var(--dim)}
-.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--gold);margin-right:.45rem;vertical-align:middle}
-.dot.idle{background:var(--dim)}.dot.work{background:var(--pink)}.dot.cap{background:var(--gold)}
-#log{flex:1;overflow-y:auto;padding:1.5rem 1.1rem;display:flex;flex-direction:column;gap:1rem}
-.wrapin{width:100%;max-width:820px;margin-inline:auto}
-.turn{display:flex;gap:.7rem;max-width:min(680px,100%);align-items:flex-start}
+:root{
+  --bg:#0b090d;--panel:#100e12;--raise:#171319;--raise2:#1c171f;--line:#2b242e;
+  --line2:#3a3040;--ink:#f8f3f6;--muted:#a69aa5;--dim:#756b76;
+  --pink:#ff3dbe;--soft:#ff8ad9;--gold:#f5c542;--green:#60d394;--danger:#ff7a8a;
+  --mono:ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
+  --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif
+}
+html,body{height:100%}
+body{background:
+  radial-gradient(900px 620px at 76% -15%,rgba(255,61,190,.11),transparent 62%),var(--bg);
+  color:var(--ink);font:15px/1.5 var(--sans);overflow:hidden;-webkit-font-smoothing:antialiased}
+button,input,select,textarea{font:inherit}
+button{color:inherit}
+.topbar{height:66px;display:flex;align-items:center;gap:.8rem;padding:0 1.2rem;border-bottom:1px solid var(--line);
+  background:rgba(11,9,13,.86);backdrop-filter:blur(18px);position:relative;z-index:20}
+.topbar .peng{width:40px;height:40px;flex:none}
+.brand{display:flex;flex-direction:column;line-height:1.08}
+.name{font-weight:850;letter-spacing:-.035em;font-size:1.08rem}
+.tagline{color:var(--dim);font-size:.72rem;margin-top:.22rem}
+.top-actions{margin-left:auto;display:flex;align-items:center;gap:.6rem}
+.local{font:650 .67rem/1 var(--mono);letter-spacing:.07em;text-transform:uppercase;color:var(--dim);
+  padding:.45rem .6rem;border:1px solid var(--line);border-radius:7px}
+.status{display:flex;align-items:center;gap:.5rem;min-height:34px;padding:.45rem .72rem;border:1px solid var(--line);
+  border-radius:999px;background:var(--raise);font:650 .69rem/1 var(--mono);letter-spacing:.055em;text-transform:uppercase;color:var(--muted)}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--dim);box-shadow:0 0 0 4px rgba(117,107,118,.08)}
+.dot.work{background:var(--pink);box-shadow:0 0 0 4px rgba(255,61,190,.11)}
+.dot.cap{background:var(--gold);box-shadow:0 0 0 4px rgba(245,197,66,.1)}
+.dot.ready{background:var(--green);box-shadow:0 0 0 4px rgba(96,211,148,.1)}
+.panel-toggle{display:none;border:1px solid var(--line);background:var(--raise);border-radius:9px;width:36px;height:36px;cursor:pointer}
+.shell{height:calc(100% - 66px);display:grid;grid-template-columns:284px minmax(0,1fr)}
+.sidebar{background:linear-gradient(180deg,rgba(23,19,25,.72),rgba(16,14,18,.96));border-right:1px solid var(--line);
+  min-width:0;padding:1.25rem 1rem;display:flex;flex-direction:column;gap:1.35rem;overflow-y:auto}
+.side-section{display:grid;gap:.6rem}
+.side-head{display:flex;align-items:center;justify-content:space-between;padding:0 .25rem}
+.side-title{font:700 .66rem/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--dim)}
+.side-count{font:650 .66rem/1 var(--mono);color:var(--dim)}
+.agent-list,.job-list{display:grid;gap:.42rem}
+.agent-row{display:grid;grid-template-columns:8px minmax(0,1fr) auto;align-items:center;gap:.62rem;padding:.67rem .7rem;
+  border:1px solid transparent;border-radius:10px;color:var(--muted)}
+.agent-row.selected{border-color:var(--line);background:var(--raise)}
+.agent-row.missing{opacity:.42}
+.agent-dot{width:7px;height:7px;border-radius:50%;background:var(--dim)}
+.agent-dot.ready{background:var(--green)}.agent-dot.capped{background:var(--gold)}
+.agent-name{font-weight:680;color:var(--ink);text-transform:capitalize}
+.agent-state{font:600 .66rem/1 var(--mono);color:var(--dim);white-space:nowrap}
+.agent-state.capped{color:var(--gold)}
+.job{width:100%;text-align:left;background:transparent;border:1px solid transparent;border-radius:11px;
+  padding:.68rem .7rem;cursor:pointer;transition:.14s ease}
+.job:hover,.job.active{background:var(--raise);border-color:var(--line)}
+.job-top{display:flex;align-items:center;gap:.45rem;margin-bottom:.25rem}
+.job-agent{font:700 .63rem/1 var(--mono);letter-spacing:.07em;text-transform:uppercase;color:var(--soft)}
+.job-time{margin-left:auto;color:var(--dim);font-size:.68rem}
+.job-prompt{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-size:.81rem}
+.job-state{width:6px;height:6px;border-radius:50%;background:var(--dim)}
+.job-state.running{background:var(--pink)}.job-state.done{background:var(--green)}.job-state.failed,.job-state.gone{background:var(--danger)}
+.empty-side{color:var(--dim);font-size:.8rem;padding:.5rem .7rem}
+.privacy{margin-top:auto;padding:.85rem;border:1px solid var(--line);border-radius:12px;color:var(--dim);font-size:.75rem;
+  background:rgba(11,9,13,.45)}
+.privacy strong{display:block;color:var(--muted);font-size:.78rem;margin-bottom:.22rem}
+.privacy svg{width:13px;height:13px;vertical-align:-2px;margin-right:.3rem}
+/* min-height:0 on both, or the flex item refuses to shrink below its content:
+   #log grows with the transcript, pushes the composer off the bottom, and
+   body{overflow:hidden} means there is no page scroll to rescue it. */
+.main{min-width:0;min-height:0;display:flex;flex-direction:column;position:relative}
+#log{flex:1;min-height:0;overflow-y:auto;padding:clamp(1.3rem,4vw,3.2rem) clamp(1rem,4vw,3rem) 2rem;
+  scroll-behavior:smooth;scrollbar-color:var(--line2) transparent}
+.log-inner{width:100%;max-width:840px;margin-inline:auto;display:flex;flex-direction:column;gap:1rem;min-height:100%}
+.welcome{margin:auto;padding:2rem 0 3rem;width:100%;max-width:720px}
+.welcome-mark{width:70px;height:70px;display:grid;place-items:center;border:1px solid rgba(255,61,190,.24);
+  border-radius:22px;background:linear-gradient(145deg,rgba(255,61,190,.15),rgba(255,61,190,.03));box-shadow:0 20px 70px rgba(255,61,190,.08)}
+.welcome-mark .peng{width:58px;height:58px}
+.welcome h1{font-size:clamp(2rem,5vw,3.1rem);line-height:1;letter-spacing:-.055em;margin:1.45rem 0 .85rem;max-width:560px}
+.welcome-copy{color:var(--muted);font-size:clamp(.98rem,2vw,1.08rem);max-width:570px}
+.suggest-label{margin-top:2rem;font:700 .65rem/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--dim)}
+.suggestions{display:grid;grid-template-columns:repeat(3,1fr);gap:.65rem;margin-top:.75rem}
+.suggestion{text-align:left;min-height:92px;padding:.85rem .9rem;background:var(--raise);border:1px solid var(--line);
+  border-radius:13px;color:var(--muted);cursor:pointer;transition:transform .14s ease,border-color .14s ease,color .14s ease}
+.suggestion:hover{transform:translateY(-2px);border-color:rgba(255,61,190,.48);color:var(--ink)}
+.suggestion b{display:block;color:var(--ink);font-size:.83rem;margin-bottom:.28rem}
+.suggestion span{font-size:.78rem;line-height:1.35}
+.turn{display:flex;gap:.7rem;max-width:min(720px,100%);align-items:flex-start}
 .turn.me{align-self:flex-end;flex-direction:row-reverse}
-.av{width:30px;height:30px;flex:none;border-radius:9px;overflow:hidden}
-.turn.me .av{background:var(--line);display:grid;place-items:center;color:var(--muted);font-size:.7rem;font-weight:700}
-.bub{background:var(--raise);border:1px solid var(--line);border-radius:16px;padding:.7rem 1rem;white-space:pre-wrap;word-break:break-word}
-.turn.me .bub{background:linear-gradient(160deg,rgba(255,61,190,.16),transparent),var(--raise);border-color:rgba(255,61,190,.35)}
-.bub .quiet{color:var(--muted)}
-.opts{display:flex;flex-wrap:wrap;gap:.45rem;margin-top:.7rem}
-.opt{background:transparent;border:1px solid var(--line);color:var(--muted);border-radius:999px;
-padding:.35rem .85rem;font:inherit;font-size:.86rem;cursor:pointer}
+.av{width:32px;height:32px;flex:none;border-radius:10px;overflow:hidden}
+.turn.me .av{background:var(--line);display:grid;place-items:center;color:var(--muted);font-size:.62rem;font-weight:750;text-transform:uppercase}
+.bub{background:var(--raise);border:1px solid var(--line);border-radius:5px 16px 16px 16px;padding:.76rem 1rem;
+  white-space:pre-wrap;word-break:break-word;color:var(--muted)}
+.turn:not(.me) .bub::first-line{color:var(--ink)}
+.turn.me .bub{color:var(--ink);background:linear-gradient(160deg,rgba(255,61,190,.16),transparent),var(--raise);
+  border-color:rgba(255,61,190,.32);border-radius:16px 5px 16px 16px}
+.opts{display:flex;flex-wrap:wrap;gap:.45rem;margin-top:.75rem}
+.opt{background:transparent;border:1px solid var(--line2);color:var(--muted);border-radius:999px;
+  padding:.38rem .82rem;font-size:.8rem;cursor:pointer}
 .opt:hover{border-color:var(--pink);color:var(--ink)}
 .opt.on{border-color:var(--pink);color:var(--soft);background:rgba(255,61,190,.1)}
-pre.out{font-family:var(--mono);font-size:.76rem;color:var(--muted);background:#07060A;border:1px solid var(--line);
-border-radius:10px;padding:.7rem .8rem;margin-top:.7rem;max-height:230px;overflow:auto;white-space:pre}
-footer{flex:none;border-top:1px solid var(--line);padding:.85rem 1.1rem;background:var(--raise)}
-.bar{display:flex;flex-wrap:wrap;gap:.45rem;align-items:center;margin-bottom:.6rem}
-.bar label{font-family:var(--mono);font-size:.68rem;letter-spacing:.07em;text-transform:uppercase;color:var(--dim)}
-select,input[type=text]{background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:8px;
-padding:.35rem .6rem;font:inherit;font-size:.85rem}
-input[type=text]{flex:1;min-width:150px;max-width:480px;font-family:var(--mono);font-size:.78rem}
-.compose{display:flex;gap:.6rem;align-items:flex-end}
-textarea{flex:1;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:14px;
-padding:.7rem .9rem;font:inherit;resize:none;min-height:52px;max-height:180px}
-textarea:focus,select:focus,input:focus{outline:none;border-color:var(--pink)}
-button.send{background:var(--pink);color:#14040E;border:0;border-radius:999px;padding:.75rem 1.4rem;
-font:inherit;font-weight:750;cursor:pointer;flex:none}
-button.send:hover{background:var(--soft)}
-button.send:disabled{opacity:.45;cursor:not-allowed}
-.hint{color:var(--dim);font-size:.76rem;margin-top:.5rem}
-.peng{overflow:visible}
-.peng .lids{opacity:0}
-[data-mood=idle] .peng .lids{animation:blinkOn 6s infinite}
-[data-mood=idle] .peng .eyes{animation:blinkOff 6s infinite}
-@keyframes blinkOn{0%,95%,100%{opacity:0}96.5%,98.5%{opacity:1}}
-@keyframes blinkOff{0%,95%,100%{opacity:1}96.5%,98.5%{opacity:0}}
-[data-mood=working] .peng{animation:bob 1.5s ease-in-out infinite;transform-origin:50% 90%}
-@keyframes bob{0%,100%{transform:translateY(0) rotate(0)}50%{transform:translateY(-2px) rotate(-2.5deg)}}
-[data-mood=sleeping] .peng .eyes{opacity:0}
-[data-mood=sleeping] .peng .lids{opacity:1}
-[data-mood=sleeping] .peng{animation:breathe 3.6s ease-in-out infinite;transform-origin:50% 95%}
-@keyframes breathe{0%,100%{transform:scale(1)}50%{transform:scale(1.05)}}
-.nap{position:relative;display:flex;align-items:center;gap:1.3rem;margin-top:.9rem;padding:1.2rem 1.4rem;
-border:1px solid rgba(245,197,66,.32);background:linear-gradient(150deg,rgba(245,197,66,.09),transparent 70%),#0E0C12;border-radius:16px}
-.nap .peng{width:70px;height:70px;flex:none}
-.napt{font-size:1.02rem;font-weight:620}
-.napclock{font-family:var(--mono);font-size:1.9rem;letter-spacing:-.02em;color:var(--gold);line-height:1.15;margin:.15rem 0}
-.naps{color:var(--muted);font-size:.87rem}
-.zzz{position:absolute;left:78px;top:2px;font-family:var(--mono);font-size:1rem;color:var(--gold)}
+.progress{margin-top:.8rem;min-width:min(560px,65vw);border:1px solid var(--line);border-radius:11px;background:#0b090d;overflow:hidden}
+.progress summary{list-style:none;display:flex;align-items:center;gap:.55rem;padding:.62rem .75rem;color:var(--dim);
+  font:650 .69rem/1 var(--mono);cursor:pointer;user-select:none}
+.progress summary::-webkit-details-marker{display:none}
+.progress summary::before{content:"›";font-size:1rem;transition:transform .15s}
+.progress[open] summary::before{transform:rotate(90deg)}
+.live{width:6px;height:6px;background:var(--pink);border-radius:50%;margin-left:auto;animation:pulse 1.8s ease-in-out infinite}
+pre.out{font-family:var(--mono);font-size:.72rem;color:#a89ba7;border-top:1px solid var(--line);padding:.75rem;
+  max-height:250px;overflow:auto;white-space:pre-wrap;word-break:break-word}
+.nap{position:relative;display:flex;align-items:center;gap:1.15rem;margin-top:.85rem;padding:1.1rem 1.2rem;
+  border:1px solid rgba(245,197,66,.3);background:linear-gradient(150deg,rgba(245,197,66,.09),transparent 72%),#0e0c12;border-radius:14px}
+.nap .peng{width:62px;height:62px;flex:none}
+.napt{font-size:.93rem;font-weight:680;color:var(--ink)}
+.napclock{font:700 1.7rem/1.15 var(--mono);letter-spacing:-.04em;color:var(--gold);margin:.16rem 0}
+.naps{color:var(--muted);font-size:.78rem}
+.zzz{position:absolute;left:68px;top:1px;font-family:var(--mono);font-size:.9rem;color:var(--gold)}
 .zzz span{position:absolute;opacity:0;animation:rise 3s linear infinite}
-.zzz span:nth-child(2){animation-delay:1s;left:9px}
-.zzz span:nth-child(3){animation-delay:2s;left:18px}
-@keyframes rise{0%{opacity:0;transform:translateY(6px) scale(.7)}
-25%{opacity:.95}100%{opacity:0;transform:translateY(-26px) scale(1.25)}}
-@media (prefers-reduced-motion:reduce){.peng,.zzz span{animation:none!important}}
-</style></head><body>
-<header>__SVG__<div class="name">Pengy</div><div class="status"><span class="dot idle" id="dot"></span><span id="st">idle</span></div></header>
-<div id="log"></div>
-<footer>
-  <div class="bar">
-    <label>agent</label><select id="agent"></select>
-    <label>folder</label><input type="text" id="dir">
-    <button class="opt" id="leash" title="Off the leash passes the agent its own bypass flag">on a leash</button>
+.zzz span:nth-child(2){animation-delay:1s;left:8px}.zzz span:nth-child(3){animation-delay:2s;left:16px}
+.composer-shell{flex:none;padding:.8rem clamp(.8rem,3vw,1.6rem) 1rem;background:linear-gradient(180deg,transparent,rgba(11,9,13,.98) 24%)}
+.composer{width:100%;max-width:880px;margin-inline:auto;border:1px solid var(--line2);border-radius:17px;
+  background:rgba(23,19,25,.96);box-shadow:0 16px 50px rgba(0,0,0,.28);overflow:hidden}
+.runbar{display:flex;align-items:center;gap:.55rem;padding:.58rem .72rem;border-bottom:1px solid var(--line)}
+.field{display:flex;align-items:center;gap:.4rem;min-width:0}
+.field.folder{flex:1}
+.field label{font:700 .62rem/1 var(--mono);letter-spacing:.07em;text-transform:uppercase;color:var(--dim)}
+select,input[type=text]{background:transparent;color:var(--muted);border:0;min-width:0;padding:.25rem .2rem;font-size:.78rem}
+select{max-width:118px;text-transform:capitalize}
+input[type=text]{width:100%;font-family:var(--mono);text-overflow:ellipsis}
+/* Two states, and which one you are in has to be readable at a glance: green
+   dot and "Leash on" is the safe default, gold and "Leash off" is not. */
+.leash{white-space:nowrap;margin-left:auto;display:flex;align-items:center;gap:.42rem;
+  border-color:rgba(96,211,148,.4);color:var(--green)}
+.leash::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--green);flex:none}
+.leash:hover{border-color:var(--green);color:var(--green)}
+.leash.off{border-color:rgba(245,197,66,.55);color:var(--gold);background:rgba(245,197,66,.1)}
+.leash.off::before{background:var(--gold);box-shadow:0 0 0 3px rgba(245,197,66,.16)}
+.leash.off:hover{border-color:var(--gold);color:var(--gold)}
+.compose{display:flex;gap:.65rem;align-items:flex-end;padding:.72rem}
+textarea{flex:1;background:transparent;color:var(--ink);border:0;padding:.38rem .3rem;font:inherit;resize:none;min-height:46px;max-height:160px}
+textarea::placeholder{color:var(--dim)}
+textarea:focus,select:focus,input:focus{outline:none}
+.send{display:flex;align-items:center;gap:.45rem;background:var(--pink);color:#180510;border:0;border-radius:11px;
+  padding:.72rem 1rem;font-weight:780;cursor:pointer;flex:none;transition:transform .14s ease,background .14s ease}
+.send:hover{background:var(--soft);transform:translateY(-1px)}
+.send:disabled{opacity:.42;cursor:not-allowed;transform:none}
+.send svg{width:14px;height:14px}
+.hint{color:var(--dim);font-size:.68rem;padding:0 .95rem .68rem}
+.peng{display:block;object-fit:contain}
+.av .peng{width:100%;height:100%}
+[data-mood=working] .peng{animation:bob 1.5s ease-in-out infinite;transform-origin:50% 90%}
+[data-mood=sleeping] .peng{animation:breathe 3.6s ease-in-out infinite;transform-origin:50% 95%;
+  filter:saturate(.5) brightness(.72)}
+@keyframes bob{0%,100%{transform:translateY(0) rotate(0)}50%{transform:translateY(-2px) rotate(-2.5deg)}}
+@keyframes breathe{0%,100%{transform:scale(1)}50%{transform:scale(1.045)}}
+@keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
+@keyframes rise{0%{opacity:0;transform:translateY(6px) scale(.7)}25%{opacity:.95}100%{opacity:0;transform:translateY(-26px) scale(1.25)}}
+@media(max-width:900px){.shell{grid-template-columns:245px minmax(0,1fr)}.sidebar{padding-inline:.75rem}.suggestions{grid-template-columns:1fr}.suggestion{min-height:0}}
+@media(max-width:700px){
+  .topbar{height:60px;padding:0 .85rem}.topbar .peng{width:34px;height:34px}.tagline,.local{display:none}.panel-toggle{display:block}
+  .shell{height:calc(100% - 60px);display:block}.sidebar{display:none;position:fixed;z-index:15;inset:60px 0 0 auto;width:min(310px,88vw);
+    box-shadow:-24px 0 70px rgba(0,0,0,.45);border-left:1px solid var(--line);border-right:0}
+  body.panel-open .sidebar{display:flex}.main{height:100%}.welcome{padding-top:1rem}.welcome-mark{width:58px;height:58px}.welcome-mark .peng{width:47px;height:47px}
+  #log{padding-top:1.3rem}.runbar{flex-wrap:wrap}.field.folder{order:3;flex-basis:100%;border-top:1px solid var(--line);padding-top:.45rem}
+  .progress{min-width:0;width:100%}.turn{max-width:100%}.bub{max-width:calc(100vw - 4.5rem)}
+  .send span{display:none}.send{width:42px;height:42px;display:grid;place-items:center;padding:0;border-radius:50%}.hint{display:none}
+}
+/* Taking the leash off is the one genuinely dangerous thing here, so it gets a
+   real dialog rather than a browser confirm() stamped "127.0.0.1 says". */
+/* margin:auto is what centres a modal dialog, and the *{margin:0} reset above
+   strips the UA default — without this it pins to the top-left corner. */
+dialog.sheet{border:0;padding:0;margin:auto;background:transparent;color:var(--ink);
+  width:min(460px,92vw);max-height:90vh}
+dialog.sheet::backdrop{background:rgba(6,4,8,.72);backdrop-filter:blur(4px)}
+.sheet-in{border:1px solid var(--line2);border-radius:18px;padding:1.5rem;
+  background:linear-gradient(165deg,rgba(245,197,66,.09),transparent 58%),var(--raise);
+  box-shadow:0 30px 90px rgba(0,0,0,.55)}
+.sheet-mark{width:44px;height:44px;border-radius:13px;display:grid;place-items:center;font-size:1.35rem;
+  border:1px solid rgba(245,197,66,.36);background:rgba(245,197,66,.1);margin-bottom:1rem}
+.sheet h2{font-size:1.3rem;font-weight:800;letter-spacing:-.03em;margin-bottom:.55rem}
+.sheet p{color:var(--muted);font-size:.92rem;margin-bottom:.7rem}
+.sheet ul{list-style:none;display:grid;gap:.4rem;margin:0 0 1.15rem}
+.sheet li{color:var(--muted);font-size:.86rem;display:flex;gap:.55rem}
+.sheet li::before{content:"—";color:var(--gold);flex:none}
+.sheet-note{color:var(--dim);font-size:.79rem;margin-bottom:1.25rem}
+.sheet-actions{display:flex;gap:.6rem;justify-content:flex-end}
+.sheet button{border:1px solid var(--line2);background:var(--raise2);border-radius:10px;
+  padding:.62rem 1rem;font-weight:700;font-size:.87rem;cursor:pointer}
+.sheet button:hover{border-color:var(--dim)}
+.sheet .go{background:var(--gold);border-color:var(--gold);color:#1a1204}
+.sheet .go:hover{filter:brightness(1.08)}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation:none!important;transition:none!important}}
+</style></head><body data-mood="idle">
+<dialog class="sheet" id="leash-sheet">
+  <form method="dialog" class="sheet-in">
+    <div class="sheet-mark" aria-hidden="true">⚠</div>
+    <h2>Take Pengy off the leash?</h2>
+    <p>The agent gets its own bypass mode for this job. In that directory it can:</p>
+    <ul>
+      <li>run any command, without asking first</li>
+      <li>install packages and change files it was not pointed at</li>
+      <li>keep doing both while you are asleep</li>
+    </ul>
+    <p class="sheet-note">Pengy is not a sandbox — it passes the flag through to the agent. Use a directory under git.</p>
+    <div class="sheet-actions">
+      <button value="cancel" autofocus>Keep the leash on</button>
+      <button value="go" class="go">Take it off</button>
+    </div>
+  </form>
+</dialog>
+<header class="topbar">
+  __SVG__
+  <div class="brand"><div class="name">Pengy</div><div class="tagline">Managing your agents, while you're away xo</div></div>
+  <div class="top-actions">
+    <span class="local">local only</span>
+    <div class="status" role="status"><span class="dot ready" id="dot"></span><span id="st">getting ready</span></div>
+    <button class="panel-toggle" id="panel-toggle" aria-label="Open activity panel" aria-expanded="false">☷</button>
   </div>
-  <div class="compose">
-    <textarea id="msg" placeholder="Tell Pengy what to do, then close the laptop…" rows="2"></textarea>
-    <button class="send" id="send">Send</button>
-  </div>
-  <div class="hint">Enter sends · Shift+Enter for a new line</div>
-</footer>
+</header>
+<div class="shell">
+  <aside class="sidebar" id="sidebar">
+    <section class="side-section">
+      <div class="side-head"><h2 class="side-title">Agents</h2><span class="side-count" id="agent-count">—</span></div>
+      <div class="agent-list" id="agents"></div>
+    </section>
+    <section class="side-section">
+      <div class="side-head"><h2 class="side-title">Recent work</h2><span class="side-count" id="job-count">0</span></div>
+      <div class="job-list" id="jobs"><div class="empty-side">No jobs yet.</div></div>
+    </section>
+    <div class="privacy">
+      <strong>
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 7V5a3.5 3.5 0 0 1 7 0v2M3 7h10v7H3z" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
+        Stays on this machine
+      </strong>
+      This page is served from 127.0.0.1. Pengy has no account, cloud, or telemetry.
+    </div>
+  </aside>
+  <main class="main">
+    <div id="log" aria-live="polite">
+      <div class="log-inner" id="log-inner">
+        <section class="welcome" id="welcome">
+          <div class="welcome-mark">__SVG__</div>
+          <h1>What should run while you're away?</h1>
+          <p class="welcome-copy">Give Pengy an outcome. It will run the agent, wait through usage caps, and only interrupt when the work genuinely needs you.</p>
+          <div class="suggest-label">Try a job like</div>
+          <div class="suggestions">
+            <button class="suggestion" data-prompt="Fix the failing tests and keep the suite green.">
+              <b>Get the build green</b><span>Fix the failing tests and keep the suite green.</span>
+            </button>
+            <button class="suggestion" data-prompt="Finish the checkout flow, including validation and tests.">
+              <b>Finish a feature</b><span>Complete the checkout flow, validation, and tests.</span>
+            </button>
+            <button class="suggestion" data-prompt="Review this repository and improve the highest-impact issue you find.">
+              <b>Improve this project</b><span>Audit the repo and act on the biggest useful change.</span>
+            </button>
+          </div>
+        </section>
+      </div>
+    </div>
+    <div class="composer-shell">
+      <div class="composer">
+        <div class="runbar">
+          <div class="field"><label for="agent">Agent</label><select id="agent" aria-label="Agent"></select></div>
+          <div class="field folder"><label for="dir">Folder</label><input type="text" id="dir" aria-label="Working folder" spellcheck="false"></div>
+          <button class="opt leash" id="leash" aria-pressed="false" title="Leash on: the agent edits files but keeps its normal safety checks. Click to take it off.">Leash on</button>
+        </div>
+        <div class="compose">
+          <textarea id="msg" aria-label="Job description" placeholder="Describe the outcome you want…" rows="2"></textarea>
+          <button class="send" id="send">
+            <span>Start job</span>
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 8h11M9 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </div>
+        <div class="hint">Enter to start · Shift+Enter for a new line · jobs keep running if you close this window</div>
+      </div>
+    </div>
+  </main>
+</div>
 <script>
 const KEY = new URLSearchParams(location.search).get('k') || '';
 const $ = s => document.querySelector(s);
-const api = (p, o={}) => fetch(p, {...o, headers:{'X-Pengy-Key':KEY,'Content-Type':'application/json',...(o.headers||{})}}).then(r=>r.json());
 const AV = `__SVG__`;
-let offLeash = false, current = null, seen = 0, lastState = '';
+let offLeash = false, current = null, watchSequence = 0, appState = null;
+
+async function api(path, options={}) {
+  const response = await fetch(path, {
+    ...options,
+    headers:{'X-Pengy-Key':KEY,'Content-Type':'application/json',...(options.headers||{})}
+  });
+  if (!response.ok) throw new Error(`Pengy returned ${response.status}`);
+  return response.json();
+}
+
+function hideWelcome() {
+  const welcome = $('#welcome');
+  if (welcome) welcome.remove();
+}
 
 function say(text, opts) {
+  hideWelcome();
   const t = document.createElement('div'); t.className = 'turn';
   t.innerHTML = `<div class="av">${AV}</div><div class="bub"></div>`;
   t.querySelector('.bub').append(...render(text));
@@ -950,17 +1323,90 @@ function say(text, opts) {
       b.onclick = () => { row.remove(); o.run(); }; row.appendChild(b); });
     t.querySelector('.bub').appendChild(row);
   }
-  $('#log').appendChild(t); scroll(); return t;
+  $('#log-inner').appendChild(t); scroll(); return t;
 }
 function render(text){ const f=document.createDocumentFragment(); f.append(document.createTextNode(text)); return [f]; }
 function me(text) {
+  hideWelcome();
   const t = document.createElement('div'); t.className = 'turn me';
   t.innerHTML = `<div class="av">you</div><div class="bub"></div>`;
-  t.querySelector('.bub').textContent = text; $('#log').appendChild(t); scroll();
+  t.querySelector('.bub').textContent = text; $('#log-inner').appendChild(t); scroll();
 }
 function scroll(){ $('#log').scrollTop = $('#log').scrollHeight; }
-function setDot(cls, label){ $('#dot').className = 'dot ' + cls; $('#st').textContent = label;
-  document.body.dataset.mood = cls === 'work' ? 'working' : cls === 'cap' ? 'sleeping' : 'idle'; }
+function setDot(cls, label) {
+  $('#dot').className = 'dot ' + cls;
+  $('#st').textContent = label;
+  document.body.dataset.mood = cls === 'work' ? 'working' : cls === 'cap' ? 'sleeping' : 'idle';
+}
+function shortTime(stamp) {
+  if (!stamp) return '';
+  const date = new Date(stamp);
+  const today = new Date().toDateString() === date.toDateString();
+  return today ? date.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})
+    : date.toLocaleDateString([], {month:'short',day:'numeric'});
+}
+function jobStatus(job) {
+  if (job.state === 'running') return 'running';
+  if (job.state === 'gone') return 'gone';
+  return job.exit === 0 ? 'done' : 'failed';
+}
+function renderAgents(state) {
+  const installed = state.agents.filter(a => a.installed);
+  const available = installed.filter(a => !a.capped);
+  const selected = $('#agent').value || localStorage.getItem('pengy-agent') || installed[0]?.name;
+  $('#agent-count').textContent = installed.length === available.length
+    ? `${available.length} ready` : `${available.length}/${installed.length} ready`;
+  $('#agents').replaceChildren(...state.agents.map(agent => {
+    const row = document.createElement('div');
+    const active = agent.name === selected;
+    row.className = `agent-row${active?' selected':''}${agent.installed?'':' missing'}`;
+    const dot = document.createElement('span');
+    dot.className = `agent-dot ${agent.installed ? (agent.capped?'capped':'ready') : ''}`;
+    const name = document.createElement('span'); name.className = 'agent-name'; name.textContent = agent.name;
+    const status = document.createElement('span');
+    status.className = `agent-state${agent.capped?' capped':''}`;
+    status.textContent = !agent.installed ? 'not found' : agent.capped ? (agent.until || 'capped') : 'ready';
+    row.append(dot,name,status);
+    if (agent.installed) row.onclick = () => {
+      $('#agent').value = agent.name; localStorage.setItem('pengy-agent',agent.name); renderAgents(appState);
+      document.body.classList.remove('panel-open'); $('#panel-toggle').setAttribute('aria-expanded','false');
+    };
+    return row;
+  }));
+  const keep = installed.some(a => a.name === selected) ? selected : installed[0]?.name;
+  $('#agent').innerHTML = installed.map(a => `<option value="${a.name}">${a.name}${a.capped?' · capped':''}</option>`).join('')
+    || '<option value="">none found</option>';
+  if (keep) $('#agent').value = keep;
+}
+function renderJobs(state) {
+  const jobs = state.jobs || [];
+  $('#job-count').textContent = jobs.length;
+  if (!jobs.length) {
+    const empty = document.createElement('div'); empty.className='empty-side'; empty.textContent='No jobs yet.';
+    $('#jobs').replaceChildren(empty); return;
+  }
+  $('#jobs').replaceChildren(...jobs.map(job => {
+    const button = document.createElement('button');
+    button.className = `job${job.id===current?' active':''}`;
+    const top = document.createElement('span'); top.className='job-top';
+    const stateDot = document.createElement('span'); stateDot.className=`job-state ${jobStatus(job)}`;
+    const agent = document.createElement('span'); agent.className='job-agent'; agent.textContent=job.agent || 'agent';
+    const time = document.createElement('span'); time.className='job-time'; time.textContent=shortTime(job.started);
+    const prompt = document.createElement('span'); prompt.className='job-prompt'; prompt.textContent=job.prompt || 'Untitled job';
+    top.append(stateDot,agent,time); button.append(top,prompt);
+    button.title = job.prompt || '';
+    button.onclick = () => {
+      watch(job.id, job);
+      document.body.classList.remove('panel-open'); $('#panel-toggle').setAttribute('aria-expanded','false');
+    };
+    return button;
+  }));
+}
+function renderState(state) {
+  appState = state;
+  renderAgents(state);
+  renderJobs(state);
+}
 function nap(agent, resetsAt) {
   const card = document.createElement('div'); card.className = 'nap';
   card.innerHTML = `<div class="zzz"><span>z</span><span>z</span><span>z</span></div>${AV}
@@ -980,70 +1426,153 @@ function nap(agent, resetsAt) {
 }
 
 async function boot() {
-  const s = await api('/api/state');
-  $('#dir').value = s.cwd;
-  $('#agent').innerHTML = s.agents.filter(a=>a.installed)
-    .map(a=>`<option value="${a.name}">${a.name}</option>`).join('') || '<option>none found</option>';
-  const ready = s.agents.filter(a=>a.installed);
-  const capped = ready.filter(a=>a.capped);
-  if (!ready.length) { say("No agent CLIs on this machine yet. Install Claude Code, Codex, Gemini, OpenCode, Kimi, Antigravity or Droid, then reopen me."); return; }
-  let hi = `Ready. ${ready.length} agent${ready.length>1?'s':''} here: ${ready.map(a=>a.name).join(', ')}.`;
-  if (capped.length) hi += `\n${capped.map(a=>`${a.name} is capped until ${a.until||'an unknown time'}`).join('; ')}.`;
-  hi += `\n\nGive me a job and go and do something else. If the agent hits its cap I'll wait for the window and pick it back up.`;
-  say(hi);
-  if (s.jobs.some(j=>j.state==='running')) {
-    const j = s.jobs.find(j=>j.state==='running');
-    say(`One from earlier is still going — ${j.agent}, "${j.prompt}".`, [{label:'Watch it', run:()=>watch(j.id)}]);
+  try {
+    const state = await api('/api/state');
+    const savedDir = localStorage.getItem('pengy-dir');
+    $('#dir').value = savedDir || state.cwd;
+    renderState(state);
+    const ready = state.agents.filter(a=>a.installed);
+    if (!ready.length) {
+      say("I can't find an agent CLI yet. Install Claude Code, Codex, Gemini, OpenCode, Kimi, Antigravity or Droid, then reopen Pengy.");
+      $('#send').disabled = true; setDot('idle','no agents found'); return;
+    }
+    const available = ready.filter(agent => !agent.capped);
+    setDot(available.length ? 'ready' : 'cap', available.length
+      ? `${available.length} agent${available.length===1?'':'s'} ready`
+      : 'all agents capped');
+    const running = state.jobs.find(j=>j.state==='running');
+    if (running) {
+      say(`A job from earlier is still running with ${running.agent}.`, [{label:'Open live view',run:()=>watch(running.id,running)}]);
+    }
+  } catch (error) {
+    say(`I couldn't reach the local Pengy service. ${error.message}`);
+    setDot('idle','disconnected'); $('#send').disabled = true;
   }
 }
 
 async function send() {
   const text = $('#msg').value.trim(); if (!text) return;
-  if (current) { say("Something's already running. Let that finish first."); return; }
-  me(text); $('#msg').value = '';
+  const agent = $('#agent').value;
+  if (!agent) { say('Choose an installed agent first.'); return; }
+  me(text);
+  $('#msg').value = ''; $('#send').disabled = true; $('#send span').textContent = 'Starting';
+  setDot('work','starting job');
   const body = { prompt:text, agent:$('#agent').value, dir:$('#dir').value, off_leash:offLeash };
-  const r = await api('/api/run', {method:'POST', body:JSON.stringify(body)});
-  if (r.error) { say('That did not start: ' + r.error); return; }
-  say(`${r.agent} is on it${offLeash?', off the leash':''}. I'll tell you when something changes.`);
-  watch(r.id);
+  try {
+    const result = await api('/api/run', {method:'POST',body:JSON.stringify(body)});
+    if (result.error) throw new Error(result.error);
+    localStorage.setItem('pengy-dir',$('#dir').value);
+    localStorage.setItem('pengy-agent',$('#agent').value);
+    watch(result.id,{agent:result.agent,prompt:text,state:'running'});
+    refreshState();
+  } catch (error) {
+    say('That job did not start. ' + error.message);
+    setDot('ready','ready');
+  } finally {
+    $('#send').disabled = false; $('#send span').textContent = 'Start job';
+  }
 }
 
-function watch(id) {
-  current = id; seen = 0; lastState = ''; setDot('work','working');
-  const box = document.createElement('pre'); box.className='out'; box.textContent='';
-  const t = say('Working.'); t.querySelector('.bub').appendChild(box);
+function watch(id, meta={}) {
+  const sequence = ++watchSequence;
+  current = id;
+  let seen = 0, lastPhase = '', failures = 0, board = null;
+  setDot('work',`${meta.agent||'agent'} working`);
+  renderJobs(appState || {jobs:[]});
+  const details = document.createElement('details'); details.className='progress';
+  const summary = document.createElement('summary'); summary.textContent='Agent output';
+  const live = document.createElement('span'); live.className='live'; summary.appendChild(live);
+  const box = document.createElement('pre'); box.className='out'; box.textContent='Waiting for output…';
+  details.append(summary,box);
+  const turn = say(`${meta.agent||'The agent'} is on it. You can leave this window — the job will keep running.`);
+  turn.querySelector('.bub').appendChild(details);
   const tick = async () => {
-    const r = await api(`/api/log?id=${encodeURIComponent(id)}&pos=${seen}`);
-    if (r.text) { seen = r.pos; box.textContent = (box.textContent + r.text).slice(-6000); box.scrollTop = box.scrollHeight; }
-    if (r.phase && r.phase !== lastState) {
-      lastState = r.phase;
-      if (r.phase === 'capped') {
-        setDot('cap','asleep, waiting out a cap');
-        const t = say(r.resets_at ? '' : (r.note || "Capped. I'll wait for the window and resume."));
-        if (r.resets_at) { t.querySelector('.bub').appendChild(nap(r.agent || 'the agent', r.resets_at)); scroll(); }
+    if (sequence !== watchSequence) return;
+    try {
+      const result = await api(`/api/log?id=${encodeURIComponent(id)}&pos=${seen}`);
+      failures = 0;
+      if (result.error) throw new Error(result.error);
+      if (result.text) {
+        seen = result.pos;
+        box.textContent = (box.textContent==='Waiting for output…'?'':box.textContent) + result.text;
+        box.textContent = box.textContent.slice(-8000); box.scrollTop = box.scrollHeight;
       }
-      if (r.phase === 'resumed') { setDot('work','working'); say('Window reset. Picking it back up.'); }
+      if (result.board) {
+        if (!board) {
+          const wrap = document.createElement('details'); wrap.className='progress'; wrap.open = true;
+          const cap = document.createElement('summary'); cap.textContent='Swarm board';
+          board = document.createElement('pre'); board.className='out';
+          wrap.append(cap,board); turn.querySelector('.bub').appendChild(wrap);
+        }
+        board.textContent = result.board;
+      }
+      if (result.phase && result.phase !== lastPhase) {
+        lastPhase = result.phase;
+        if (result.phase === 'capped') {
+          setDot('cap','waiting out a cap');
+          const message = say(result.resets_at ? 'The usage window is full. Nothing needs you yet.' : (result.note || "The agent is capped. I'll wait for the window and resume."));
+          if (result.resets_at) { message.querySelector('.bub').appendChild(nap(result.agent||'The agent',result.resets_at)); scroll(); }
+        }
+        if (result.phase === 'resumed') {
+          setDot('work',`${result.agent||'agent'} working`); say('The window reset. Picking up exactly where it stopped.');
+        }
+      }
+      if (result.state !== 'running') {
+        current = null; live.remove(); summary.firstChild.textContent='Agent output · finished';
+        setDot('ready','ready');
+        say(result.exit===0 ? (result.summary||'Done. The job finished successfully.')
+          : `That job stopped and needs you. ${result.summary||''}`.trim());
+        refreshState(); return;
+      }
+      setTimeout(tick,2000);
+    } catch (error) {
+      failures += 1;
+      setDot('idle',failures > 2 ? 'connection lost' : 'reconnecting');
+      if (failures === 3) say('The window lost contact with the local service. The background job is still safe; I’ll keep trying.');
+      setTimeout(tick,Math.min(10000,2000*failures));
     }
-    if (r.state !== 'running') {
-      current = null; setDot('idle','idle');
-      say(r.exit === 0 ? (r.summary || 'Done.') : `That one stopped and needs you. ${r.summary||''}`.trim());
-      return;
-    }
-    setTimeout(tick, 2000);
   };
   tick();
 }
 
+async function refreshState() {
+  try { renderState(await api('/api/state')); }
+  catch (_) { /* the active job poll owns connection feedback */ }
+}
+
 $('#send').onclick = send;
 $('#msg').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
+$('#agent').addEventListener('change', () => {
+  localStorage.setItem('pengy-agent',$('#agent').value);
+  if (appState) renderAgents(appState);
+});
+$('#dir').addEventListener('change',()=>localStorage.setItem('pengy-dir',$('#dir').value));
+function setLeash(off) {
+  offLeash = off;
+  const b = $('#leash');
+  b.classList.toggle('off', off);
+  b.setAttribute('aria-pressed', String(off));
+  b.textContent = off ? 'Leash off' : 'Leash on';
+  b.title = off
+    ? 'Leash off: the agent runs commands without asking. Click to put it back on.'
+    : 'Leash on: the agent edits files but keeps its normal safety checks. Click to take it off.';
+}
 $('#leash').onclick = () => {
-  offLeash = !offLeash;
-  $('#leash').classList.toggle('on', offLeash);
-  $('#leash').textContent = offLeash ? 'off the leash' : 'on a leash';
-  if (offLeash) say("Off the leash means the agent gets its own bypass mode — it can run commands and install things. I am not a sandbox and cannot stop it. Use a folder that's in git.");
+  if (offLeash) return setLeash(false);       // putting it back on needs no ceremony
+  const sheet = $('#leash-sheet');
+  sheet.returnValue = 'cancel';
+  sheet.showModal();
+  sheet.addEventListener('close', () => { if (sheet.returnValue === 'go') setLeash(true); }, {once:true});
+};
+document.querySelectorAll('.suggestion').forEach(button => button.onclick = () => {
+  $('#msg').value = button.dataset.prompt; $('#msg').focus();
+});
+$('#panel-toggle').onclick = () => {
+  const open = document.body.classList.toggle('panel-open');
+  $('#panel-toggle').setAttribute('aria-expanded',String(open));
 };
 boot();
-setInterval(() => api('/api/state').catch(()=>{}), 20000);
+setInterval(refreshState,15000);
 </script></body></html>"""
 
 
@@ -1117,7 +1646,9 @@ def _ui_log(jid: str, pos: int) -> dict:
     resets_at = entry.get("resetsAt") if entry.get("state") == "capped" else None
     return {"text": text, "pos": pos, "state": state, "exit": meta.get("exit"),
             "phase": phase, "note": note, "summary": summary,
-            "agent": agent, "resets_at": resets_at}
+            "agent": agent, "resets_at": resets_at,
+            # Only swarm jobs have a lane, so a plain job carries no board.
+            "board": read_board(Path(meta["dir"])) if meta.get("lane") and meta.get("dir") else None}
 
 
 def _ui_run(body: dict) -> dict:
@@ -1144,11 +1675,11 @@ def _handler(token: str, page: bytes):
         def log_message(self, *a):  # the terminal is the thing we are replacing
             pass
 
-        def _send(self, code, body: bytes, ctype="application/json"):
+        def _send(self, code, body: bytes, ctype="application/json", cache=False):
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
+            self.send_header("Cache-Control", "max-age=86400" if cache else "no-store")
             self.end_headers()
             self.wfile.write(body)
 
@@ -1170,6 +1701,13 @@ def _handler(token: str, page: bytes):
         def do_GET(self):
             url = urlparse(self.path)
             query = parse_qs(url.query)
+            # Pengy's face, served once and cached, rather than the same base64
+            # inlined into every turn. Unauthenticated on purpose: the browser
+            # asks for /favicon.ico by itself with no token, and a 403 there is
+            # a red line in the console for a picture that gates nothing. The
+            # token still guards everything that reads state or starts work.
+            if url.path in ("/pengy.png", "/favicon.ico"):
+                return self._send(200, icon_png(), "image/png", cache=True)
             if not self._authed(query):
                 return self._send(403, b"forbidden", "text/plain")
             if url.path == "/":
@@ -1204,10 +1742,11 @@ def _handler(token: str, page: bytes):
 
 def do_chat(args: argparse.Namespace) -> int:
     token = uuid.uuid4().hex
-    page = CHAT_HTML.replace("__SVG__", PENGY_SVG).encode()
+    page = CHAT_HTML.replace("__SVG__", icon_img()).encode()
     handler = _handler(token, page)
     server = ThreadingHTTPServer(("127.0.0.1", args.port), handler)
     url = f"http://127.0.0.1:{server.server_port}/?k={token}"
+    chat_url_file().write_text(url)  # the widget reuses this rather than starting another
     say(f"Pengy is at {url}")
     say(f"{DIM}closes itself when you close the tab; jobs keep running{OFF}")
 
@@ -1225,22 +1764,23 @@ def do_chat(args: argparse.Namespace) -> int:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
+    chat_url_file().unlink(missing_ok=True)
     say("bye.")
     return 0
 
 
 DESKTOP_ENTRY = """[Desktop Entry]
 Type=Application
-Name=Pengy
+Name={name}
 Comment=Runs your AI coding agents while you are away
-Exec={exe} chat
+Exec={exe} {cmd}
 Icon={icon}
 Terminal=false
 Categories=Development;
 """
 
 
-def do_desktop(_args: argparse.Namespace) -> int:
+def do_desktop(args: argparse.Namespace) -> int:
     """Put a Pengy icon in the app menu so it is a double-click, not a command."""
     if sys.platform == "darwin" or os.name == "nt":
         say("desktop launchers are Linux-only for now — run `pengy chat`.")
@@ -1249,16 +1789,235 @@ def do_desktop(_args: argparse.Namespace) -> int:
     apps_dir = Path.home() / ".local/share/applications"
     icon_dir.mkdir(parents=True, exist_ok=True)
     apps_dir.mkdir(parents=True, exist_ok=True)
-    icon = icon_dir / "pengy.svg"
-    icon.write_text(PENGY_SVG)
+    icon = icon_dir / "pengy.png"
+    icon.write_bytes(icon_png())
+    (icon_dir / "pengy.svg").unlink(missing_ok=True)  # the drawn one, before 0.6
     exe = shutil.which("pengy") or f"{sys.executable} {os.path.abspath(__file__)}"
-    entry = apps_dir / "pengy.desktop"
-    entry.write_text(DESKTOP_ENTRY.format(exe=exe, icon=icon))
-    entry.chmod(0o755)
+    for name, label, cmd in (("pengy", "Pengy", "chat"), ("pengy-widget", "Pengy widget", "widget")):
+        entry = apps_dir / f"{name}.desktop"
+        entry.write_text(DESKTOP_ENTRY.format(exe=exe, icon=icon, name=label, cmd=cmd))
+        entry.chmod(0o755)
     subprocess.run(["update-desktop-database", str(apps_dir)], check=False, capture_output=True)
-    say(f"added {entry}")
-    say("Pengy is now in your applications menu. Search for it and pin it.")
+    say(f"added Pengy and Pengy widget to {apps_dir}")
+    if getattr(args, "autostart", False):
+        _autostart(True)
+    say("search your applications for Pengy. `pengy widget` floats her over the desktop.")
     return 0
+
+
+# -------------------------------------------------------------- widget --
+
+# A small always-on-top chip that sits over the desktop. Tk cannot get a
+# per-pixel-transparent window on X11, so this is a deliberate panel rather
+# than a floating cut-out — it reads as intentional instead of broken. The
+# artwork itself still has a transparent background; Tk composites it onto
+# the panel, so it is the same face as the site and the window.
+
+WIDGET_W, WIDGET_H = 196, 72
+
+
+def chat_url_file() -> Path:
+    return state_dir() / "chat.url"
+
+
+def live_chat_url() -> str | None:
+    """The URL of a `pengy chat` that is actually still answering."""
+    try:
+        url = chat_url_file().read_text().strip()
+    except OSError:
+        return None
+    try:
+        import socket
+        from urllib.parse import urlparse as _p
+
+        parsed = _p(url)
+        with socket.create_connection(("127.0.0.1", parsed.port), timeout=0.4):
+            return url
+    except Exception:
+        return None
+
+
+def _widget_state() -> tuple[str, str]:
+    """(mood, one short line) for the chip. Cheap enough to poll every 3s."""
+    jobs = [m for m in (job_meta(p.stem) for p in jobs_dir().glob("*.json")) if m.get("id")]
+    live = [j for j in jobs if j.get("state") == "running" and _alive(j.get("pid"))]
+    led = read_ledger()
+
+    def until(agent: str) -> str:
+        entry = led.get(agent, {})
+        stamp = entry.get("resetsAt")
+        if not stamp:
+            return "unknown"
+        try:
+            left = (datetime.fromisoformat(stamp) - _now()).total_seconds()
+        except ValueError:
+            return "unknown"
+        if left <= 0:
+            return "any moment"
+        return f"{int(left // 3600)}h {int(left % 3600 // 60):02d}m"
+
+    for job in live:
+        agent = job.get("agent", "?")
+        if not quota_ok(agent):
+            return "asleep", f"{agent} capped · {until(agent)}"
+    if live:
+        return "working", f"{live[0].get('agent', '?')} · working"
+    capped = [a for a in led if not quota_ok(a)]
+    if capped:
+        return "idle", f"{capped[0]} capped · {until(capped[0])}"
+    return "idle", "idle · tap to open"
+
+
+def do_widget(args: argparse.Namespace) -> int:
+    try:
+        import tkinter as tk
+    except ImportError:
+        say("the floating widget needs Tk, which this Python does not have.")
+        say("  Zorin / Ubuntu / Debian:  sudo apt install python3-tk")
+        say("  Fedora:                   sudo dnf install python3-tkinter")
+        say("Everything else works without it — `pengy chat` opens the window in a browser.")
+        return 1
+
+    BG, LINE, INK, DIM = "#141117", "#3A3040", "#F6F1F4", "#9C919B"
+    PINK, GOLD, DARK = "#FF3DBE", "#F5C542", "#14040E"
+
+    root = tk.Tk()
+    root.title("Pengy")
+    root.overrideredirect(True)
+    root.wm_attributes("-topmost", True)
+    try:
+        root.wm_attributes("-type", "dock")  # keeps it visible across workspaces
+    except tk.TclError:
+        pass
+    root.wm_attributes("-alpha", 0.96)
+
+    pos = state_dir() / "widget.pos"
+    try:
+        x, y = (int(v) for v in pos.read_text().split(","))
+    except (OSError, ValueError):
+        x, y = root.winfo_screenwidth() - WIDGET_W - 40, 60
+    root.geometry(f"{WIDGET_W}x{WIDGET_H}+{x}+{y}")
+
+    c = tk.Canvas(root, width=WIDGET_W, height=WIDGET_H, bg=BG,
+                  highlightthickness=1, highlightbackground=LINE)
+    c.pack(fill="both", expand=True)
+
+    # Tk 8.6 reads a base64 PNG directly, so the real artwork costs no asset
+    # file and no dependency. root keeps the reference alive past this scope.
+    try:
+        root.peng = tk.PhotoImage(data=PENGY_ICON_SMALL)
+    except tk.TclError:  # Tk older than 8.6 cannot read PNG
+        root.destroy()
+        say(f"the floating widget needs Tk 8.6+ (this is {tk.TkVersion}).")
+        say("`pengy chat` opens the same window in a browser instead.")
+        return 1
+    c.create_image(36, WIDGET_H // 2, image=root.peng, tags="face")
+    zs = [c.create_text(58 + i * 8, 20 - i * 6, text="z", fill=GOLD,
+                        font=("TkDefaultFont", 7 + i * 2)) for i in range(3)]
+    label = c.create_text(72, 27, text="", anchor="w", fill=INK, font=("TkDefaultFont", 9, "bold"))
+    sub = c.create_text(72, 44, text="pengy", anchor="w", fill=DIM, font=("TkDefaultFont", 8))
+
+    def show(items, on):
+        for i in items:
+            c.itemconfigure(i, state="normal" if on else "hidden")
+
+    state = {"mood": "", "tick": 0, "bob": 0}
+
+    def paint():
+        mood, text = _widget_state()
+        state["mood"] = mood
+        head, _, tail = text.partition(" · ")
+        c.itemconfigure(label, text=head)
+        c.itemconfigure(sub, text=tail or "pengy")
+        show(zs, mood == "asleep")
+        root.after(3000, paint)
+
+    def animate():
+        state["tick"] += 1
+        t = state["tick"]
+        if state["mood"] == "asleep":
+            for i, z in enumerate(zs):
+                c.itemconfigure(z, state="normal" if (t + i * 3) % 9 < 6 else "hidden")
+        want = -2 if (state["mood"] == "working" and t % 2) else 0
+        if want != state["bob"]:
+            c.move("face", 0, want - state["bob"])
+            state["bob"] = want
+        root.after(420, animate)
+
+    # --- drag to move, click to open ---
+    drag = {"x": 0, "y": 0, "moved": False}
+
+    def press(e):
+        drag.update(x=e.x_root, y=e.y_root, moved=False)
+
+    def motion(e):
+        dx, dy = e.x_root - drag["x"], e.y_root - drag["y"]
+        if abs(dx) > 3 or abs(dy) > 3:
+            drag["moved"] = True
+        root.geometry(f"+{root.winfo_x() + dx}+{root.winfo_y() + dy}")
+        drag.update(x=e.x_root, y=e.y_root)
+
+    def release(_e):
+        if drag["moved"]:
+            pos.write_text(f"{root.winfo_x()},{root.winfo_y()}")
+        else:
+            open_chat()
+
+    def open_chat():
+        url = live_chat_url()
+        if url:
+            webbrowser.open(url)
+            return
+        spawn = {"creationflags": 0x00000008} if os.name == "nt" else {"start_new_session": True}
+        subprocess.Popen([sys.executable, os.path.abspath(__file__), "chat"],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, **spawn)
+
+    menu = tk.Menu(root, tearoff=0, bg=BG, fg=INK, activebackground=PINK, activeforeground=DARK)
+    menu.add_command(label="Open Pengy", command=open_chat)
+    menu.add_command(label="Start at login", command=lambda: _autostart(True))
+    menu.add_command(label="Don't start at login", command=lambda: _autostart(False))
+    menu.add_separator()
+    menu.add_command(label="Quit", command=root.destroy)
+
+    c.bind("<Button-1>", press)
+    c.bind("<B1-Motion>", motion)
+    c.bind("<ButtonRelease-1>", release)
+    c.bind("<Button-3>", lambda e: menu.tk_popup(e.x_root, e.y_root))
+
+    paint()
+    animate()
+    root.mainloop()
+    return 0
+
+
+AUTOSTART_ENTRY = """[Desktop Entry]
+Type=Application
+Name=Pengy widget
+Comment=The floating Pengy that watches your agents
+Exec={exe} widget
+Icon={icon}
+Terminal=false
+X-GNOME-Autostart-enabled=true
+"""
+
+
+def _autostart(on: bool) -> bool:
+    d = Path.home() / ".config/autostart"
+    d.mkdir(parents=True, exist_ok=True)
+    entry = d / "pengy-widget.desktop"
+    if not on:
+        entry.unlink(missing_ok=True)
+        say("the widget will no longer start at login.")
+        return True
+    icon = Path.home() / ".local/share/icons/pengy.png"
+    if not icon.exists():
+        icon.parent.mkdir(parents=True, exist_ok=True)
+        icon.write_bytes(icon_png())
+    exe = shutil.which("pengy") or f"{sys.executable} {os.path.abspath(__file__)}"
+    entry.write_text(AUTOSTART_ENTRY.format(exe=exe, icon=icon))
+    say(f"the widget will start at login ({entry})")
+    return True
 
 
 # ----------------------------------------------------------------- misc --
@@ -1302,6 +2061,8 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="pengy",
         description="Keeps your AI coding agents working after they hit the rate limit.",
+        epilog="Just type `pengy` to open the window. `pengy widget` floats her over "
+               "the desktop; `pengy desktop` puts her in your applications menu.",
     )
     p.add_argument("--version", action="version", version=f"pengy {__version__}")
     subs = p.add_subparsers(dest="cmd")
@@ -1325,7 +2086,25 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--idle", type=int, default=180, help="quit after this many seconds with the tab closed")
     c.set_defaults(func=do_chat)
 
-    subs.add_parser("desktop", help="add Pengy to your applications menu").set_defaults(func=do_desktop)
+    subs.add_parser("widget", help="the floating Pengy that sits over your desktop").set_defaults(func=do_widget)
+
+    dk = subs.add_parser("desktop", help="add Pengy to your applications menu")
+    dk.add_argument("--autostart", action="store_true", help="also float the widget from login")
+    dk.set_defaults(func=do_desktop)
+    s = subs.add_parser("swarm", help="put every installed agent on one goal at the same time")
+    s.add_argument("prompt", help="the goal — every agent gets this one")
+    s.add_argument("--agents", help="comma-separated (default: every installed agent)")
+    s.add_argument("-C", "--dir", default=".", help="working directory (default: .)")
+    s.add_argument("--off-leash", action="store_true", help="every agent gets its own bypass mode")
+    s.add_argument("--max-waits", type=int, default=4, help="stop an agent after this many caps (default: 4)")
+    s.add_argument("-y", "--yes", action="store_true", help="skip the off-leash confirmation")
+    s.set_defaults(func=do_swarm)
+
+    b = subs.add_parser("board", help="what the swarm is telling itself, every lane merged")
+    b.add_argument("-C", "--dir", default=".", help="working directory (default: .)")
+    b.add_argument("-f", "--follow", action="store_true", help="stay on screen and refresh")
+    b.set_defaults(func=do_board)
+
     subs.add_parser("agents", help="which agents are installed, and their quota state").set_defaults(func=do_agents)
     subs.add_parser("jobs", help="background jobs, running and finished").set_defaults(func=do_jobs)
     subs.add_parser("mcp", help="run as an MCP server so other agents can use Pengy").set_defaults(func=do_mcp)
@@ -1333,14 +2112,190 @@ def main(argv: list[str] | None = None) -> int:
 
     args = p.parse_args(argv)
     if not getattr(args, "func", None):
-        p.print_help()
-        return 0
+        # Bare `pengy` opens the window. What someone wants immediately after
+        # installing is to see the thing, not a usage block — and a usage block
+        # is what they got. `pengy --help` still lists every command.
+        args = p.parse_args(["chat"])
     try:
         return args.func(args)
     except KeyboardInterrupt:
         say("stopped.")
         return 130
 
+
+# ------------------------------------------------------------- artwork --
+
+# Pengy herself, transparent-background PNG, base64. 256px for the window and
+# the app menu, 56px for the desktop widget. Kept last so the code above reads
+# without scrolling past her, and before __main__ so both are defined by then.
+
+PENGY_ICON = (
+    "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"
+    "RK5CYII="
+)
+
+PENGY_ICON_SMALL = (
+    "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"
+)
 
 if __name__ == "__main__":
     sys.exit(main())

@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="site/assets/pengy.jpg" width="120" alt="Pengy" />
+<img src="site/assets/pengy-mark.png" width="128" alt="Pengy" />
 
 # Pengy
 
@@ -84,8 +84,9 @@ parser    ok
 If you'd rather not look at a terminal at all:
 
 ```bash
-pengy chat        # opens a Pengy window in your browser
-pengy desktop     # puts a Pengy icon in your applications menu (Linux)
+pengy chat                  # opens a Pengy window in your browser
+pengy widget                # floats a small Pengy over the desktop, above everything
+pengy desktop --autostart   # both in your applications menu, widget on at login (Linux)
 ```
 
 You get a chat box. Pengy tells you which agents are ready and which are capped, you type a
@@ -95,6 +96,15 @@ token generated per launch, and quits itself once you close the tab. Jobs carry 
 
 No Electron, no dependencies — the page is served by the standard library and drawn in the
 same colours as the site.
+
+**The widget** is a small always-on-top chip that sits over your desktop and stays put across
+workspaces. It shows what the agents are doing without you opening anything: `claude · working`,
+`codex capped · 1h 42m`, and Pengy shuts her eyes with drifting z's while she waits out a cap.
+Drag to move, click to open the full window, right-click for the menu.
+
+It is the one part that needs Tk, because drawing a floating desktop window is not something the
+standard library does otherwise. On Zorin, Ubuntu or Debian that is `sudo apt install python3-tk`.
+Pengy tells you so and carries on working without it.
 
 ## Use
 
@@ -118,6 +128,45 @@ pengy jobs
 # what's installed, and who's capped
 pengy agents
 ```
+
+## The swarm
+
+Every installed agent on the same goal, at the same time:
+
+```bash
+pengy swarm "audit this repo and fix the highest-impact issues you find"
+pengy board -f            # what they're telling each other, live
+```
+
+There is no conductor process and no plan. Each agent gets the goal and a shared board, and
+**claims** its own work off it before touching anything:
+
+```console
+$ pengy board
+claude      - 01:12 CLAIM src/parse/* — the tokenizer, it's the slow one
+codex       - 01:12 CLAIM tests/ — filling the gaps
+gemini      - 01:13 CLAIM docs/ + README, staying out of src
+codex       - 01:31 NOTE  parse_line() now returns a tuple, not a string. Callers beware.
+claude      - 01:34 DONE  tokenizer, 3.1x faster, tests green
+gemini      - 01:40 BLOCKED need the new parse_line signature documented — picking up docs/cli instead
+```
+
+The board is a directory of plain markdown in `.pengy/board/`, one file per agent, and an agent
+writes only its own. That is the entire coordination mechanism, and it's deliberate: a single
+shared file edited by agent tools loses lines when two of them post at the same moment, silently,
+at 3am. Separate lanes cannot. `pengy board` merges them back into one chronology.
+
+Each agent hits its own cap independently, and Pengy waits out each one separately — so a swarm
+doesn't stop when one vendor's window closes. That agent rejoins when its window resets.
+
+```bash
+pengy swarm "get the build green" --agents claude,codex,gemini
+pengy swarm "migrate to the new SDK" --off-leash      # every agent in bypass mode. Use git.
+```
+
+**When not to.** A swarm suits wide work — many independent files, a big test suite, a sweeping
+audit. On one narrow task, three agents will collide over the same file and you'll get worse work
+than one agent would have done. `pengy run` is still the default.
 
 | Agent | Binary | Resumes with | Notes |
 |---|---|---|---|
@@ -155,6 +204,8 @@ Then, in your session: *"check what still has quota and hand the migration to co
 | `pengy_quota` | Which agents are installed, and which are capped until when |
 | `pengy_run` | Start a background job that survives caps. Returns a job id immediately |
 | `pengy_jobs` | Status of running and finished jobs |
+| `pengy_swarm` | Put several agents on one goal at once. They claim work off a shared board |
+| `pengy_board` | Read that board — who claimed what, what landed, what's blocked |
 
 **An agent cannot grant itself a bypass mode.** Jobs started over MCP run on the leash. Only the human running the server can change that, by setting `PENGY_MCP_ALLOW_OFF_LEASH=1` in the environment.
 
@@ -204,6 +255,7 @@ Being straight about this, because a tool that runs while you're asleep earns tr
 - **It is not a daemon.** `--detach` gives you a background process that outlives the terminal, but nothing restarts it if the machine reboots or sleeps through the reset. A long cap on a laptop that suspends will resume when the laptop does, not before.
 - **`--fallback` starts a fresh context.** A different vendor's agent cannot read Claude's session. It gets your original prompt and the working directory, not the reasoning so far.
 - **It doesn't watch your agents.** No dashboard, no live diffs, no terminal multiplexing. [Twelve other products](https://www.codeagentswarm.com/en) do that, several of them well.
+- **A swarm is not transactional.** Claims are a convention the agents follow, not a lock Pengy enforces. Two agents can still edit the same file, and nothing rolls that back. Run swarms in a git repo.
 - **It sends nothing anywhere.** No telemetry, no account, no server. The only network call it can make is a webhook *you* set in `PENGY_NOTIFY_URL`.
 
 ## Notifications

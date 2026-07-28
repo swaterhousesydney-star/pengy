@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "pengy",
-  "version": "0.4.0",
+  "version": "0.6.0",
   "description": "Hand long jobs to a background agent that survives usage caps. Pengy waits out the rate limit, resumes the session, and keeps working after you close the laptop.",
   "author": {
     "name": "swaterhousesydney-star",

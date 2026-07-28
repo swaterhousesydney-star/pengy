@@ -225,4 +225,70 @@ with tempfile.TemporaryDirectory() as tmp:
     assert time.time() - started < 5, "must not sleep on an unknown reset time"
     assert pengy.read_ledger()["fake"]["resetsAt"] is None
 
+# -------------------------------------------------------------- the board --
+
+# The swarm has no orchestrator, so the merged board is the only thing that
+# makes "who claimed what, and who was first" answerable. Ordering is the logic.
+with tempfile.TemporaryDirectory() as tmp:
+    tmp = Path(tmp)
+    lanes = pengy.board_dir(tmp)
+    (lanes / "claude.md").write_text(
+        "- 09:05 CLAIM the parser\n  and everything under lib/parse\n- 09:20 DONE the parser\n")
+    (lanes / "codex.md").write_text("- 09:10 CLAIM the tests\n")
+
+    merged = pengy.read_board(tmp).splitlines()
+    assert [line.split()[0] for line in merged] == ["claude", "claude", "codex", "claude"], merged
+    assert "lib/parse" in merged[1], "a continuation line must stay under its own entry, not float to the top"
+    assert "(nothing on the board" in pengy.read_board(tmp / "elsewhere"), "an unused directory is not an error"
+
+    # Refusals, on a machine with no agent CLIs — which is exactly what CI is.
+    assert pengy.main(["swarm", "   ", "-C", str(tmp)]) == 2, "a swarm needs a goal"
+    assert pengy.main(["swarm", "x", "--agents", "claude,nonesuch", "-C", str(tmp)]) == 2, "unknown agent"
+    assert pengy.main(["swarm", "x", "--agents", "fake", "-C", str(tmp)]) == 2, "one agent is not a swarm"
+
+    # Every agent must be told its own lane and no one else's, or two of them
+    # write the same file and lose each other's lines.
+    brief = pengy.SWARM_BRIEF.format(me="codex", n=2, peers="claude", goal="ship it")
+    assert ">> .pengy/board/codex.md" in brief and "board/claude.md" not in brief, brief
+
+# An overnight board is the whole product, and string-sorting bare HH:MM puts
+# 00:15 above 23:40 — the DONE above its own CLAIM. Dated stamps sort right.
+with tempfile.TemporaryDirectory() as tmp:
+    tmp = Path(tmp)
+    lanes = pengy.board_dir(tmp)
+    (lanes / "claude.md").write_text(
+        "- 2026-07-27 23:40 CLAIM src/auth\n- 2026-07-28 00:15 DONE src/auth\n")
+    (lanes / "codex.md").write_text(
+        "- 2026-07-27 23:55 CLAIM the tests\n- 2026-07-28 01:30 NOTE auth moved\n")
+    order = [f"{l.split()[0]} {l.split()[3]}" for l in pengy.read_board(tmp).splitlines()]
+    assert order == ["claude 23:40", "codex 23:55", "claude 00:15", "codex 01:30"], order
+    # and the brief must ask for that date, or nothing writes one
+    assert "%Y-%m-%d" in pengy.SWARM_BRIEF, "the brief has to ask for a dated stamp"
+
+# The board is written by agents on the default leash, which is edits-only for
+# claude, gemini and droid — a brief that forbids their file tools leaves them
+# unable to post at all.
+assert "your normal file-editing tool is fine" in pengy.SWARM_BRIEF
+
+# `pengy` on its own opens the window. It used to print usage, which taught
+# nobody anything and read as a broken install.
+_parsed = []
+_chat = pengy.do_chat
+pengy.do_chat = lambda a: _parsed.append(a.cmd) or 0
+try:
+    assert pengy.main([]) == 0
+finally:
+    pengy.do_chat = _chat
+assert _parsed == ["chat"], _parsed
+
+# One version, four files. The 0.5.0 release shipped 0.4.0 in all of them.
+_root = Path(__file__).parent
+_seen = {"pengy.py": pengy.__version__}
+_seen["pyproject.toml"] = re.search(r'^version = "(.+?)"', (_root / "pyproject.toml").read_text(),
+                                    re.M).group(1)
+for _f in (".claude-plugin/plugin.json", ".claude-plugin/marketplace.json"):
+    for _v in set(re.findall(r'"version":\s*"(.+?)"', (_root / _f).read_text())):
+        _seen[f"{_f}:{_v}"] = _v
+assert len(set(_seen.values())) == 1, f"versions disagree: {_seen}"
+
 print("all good")

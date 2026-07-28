@@ -5,11 +5,21 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Pengy — Stop watching.</title>
 <meta name="description" content="Every other tool shows you more terminals. Pengy runs them — through the night, through the rate limits — and wakes you only when it's genuinely stuck.">
-<link rel="icon" href="assets/pengy.jpg">
+<link rel="icon" href="assets/favicon.ico" sizes="any">
+<link rel="icon" type="image/png" href="assets/pengy-mark.png">
+<link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+<meta name="theme-color" content="#0B0A0D">
+<link rel="canonical" href="https://pengy-gold.vercel.app/">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://pengy-gold.vercel.app/">
 <meta property="og:title" content="Pengy — Stop watching.">
 <meta property="og:description" content="Every other tool shows you more terminals. Pengy runs them — through the night, through the rate limits — and wakes you only when it's genuinely stuck.">
-<meta property="og:image" content="assets/pengy.jpg">
+<meta property="og:image" content="https://pengy-gold.vercel.app/assets/og.jpg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Pengy — your coding agents keep working through the night, through the caps.">
 <meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://pengy-gold.vercel.app/assets/og.jpg">
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -101,8 +111,11 @@
   .hero-art { position: relative; justify-self: center; }
   .hero-art img {
     width: min(340px, 74vw); height: auto; display: block;
-    border-radius: 26px; border: 1px solid var(--line);
+    filter: drop-shadow(0 26px 60px rgba(255,61,190,.28));
+    animation: float 6s ease-in-out infinite;
   }
+  @keyframes float { 0%,100% { transform: translateY(0) rotate(-.6deg); } 50% { transform: translateY(-14px) rotate(.6deg); } }
+  @media (prefers-reduced-motion: reduce) { .hero-art img { animation: none; } }
   .zzz {
     position: absolute; top: -14px; right: -6px;
     font-family: var(--mono); font-size: 1.3rem; color: var(--pink-soft);
@@ -163,16 +176,50 @@
 
   /* ---------- platforms ---------- */
   /* ---------- install command ---------- */
+  /* A real button: one tap copies. Never scrolls — the whole command is
+     always readable, because a half-visible install line is not trustable. */
   .cmd {
-    display: flex; align-items: center; gap: .9rem;
+    display: flex; align-items: flex-start; gap: .8rem;
+    width: 100%; max-width: 100%; text-align: left;
     background: #07060A; border: 1px solid var(--line); border-radius: 12px;
     padding: .95rem 1.1rem; font-family: var(--mono); font-size: .95rem;
-    color: var(--ink); max-width: 100%; overflow-x: auto; cursor: pointer;
-    -webkit-user-select: all; user-select: all;
+    color: var(--ink); cursor: pointer;
+    transition: border-color .12s ease, background .12s ease;
   }
-  .cmd::before { content: "$"; color: var(--pink); flex: none; }
-  .cmd:hover { border-color: rgba(255,61,190,.42); }
-  .cmd code { white-space: nowrap; }
+  .cmd::before { content: "$"; color: var(--pink); flex: none; line-height: 1.5; }
+  .cmd:hover, .cmd:focus-visible { border-color: rgba(255,61,190,.42); background: #0A0810; }
+  .cmd:focus-visible { outline: 2px solid var(--pink); outline-offset: 2px; }
+  .cmd code {
+    flex: 1; min-width: 0; line-height: 1.5;
+    white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+  .cmd .copy {
+    flex: none; align-self: center; font-family: var(--display);
+    font-size: .68rem; font-weight: 700; letter-spacing: .09em; text-transform: uppercase;
+    color: var(--dim); border: 1px solid var(--line); border-radius: 999px;
+    padding: .3rem .62rem; white-space: nowrap; transition: color .12s ease, border-color .12s ease;
+  }
+  .cmd:hover .copy { color: var(--pink-soft); border-color: rgba(255,61,190,.42); }
+  .cmd.done { border-color: rgba(255,61,190,.55); }
+  .cmd.done .copy { color: #14040E; background: var(--pink); border-color: var(--pink); }
+  @media (max-width: 560px) {
+    .cmd { font-size: .8rem; gap: .55rem; padding: .85rem .9rem; flex-wrap: wrap; }
+    .cmd .copy { align-self: flex-start; margin-left: auto; }
+  }
+
+  /* two steps, numbered, so "what do I actually type" is never a question */
+  .steps { list-style: none; counter-reset: s; display: grid; gap: 1.45rem; text-align: left; }
+  .steps li { display: grid; gap: .55rem; position: relative; padding-left: 2.7rem; }
+  .steps li::before {
+    counter-increment: s; content: counter(s);
+    position: absolute; left: 0; top: 1px; width: 28px; height: 28px;
+    border-radius: 50%; display: grid; place-items: center;
+    font: 700 .8rem/1 var(--mono); color: var(--pink);
+    border: 1px solid rgba(255,61,190,.42);
+  }
+  .step-t { color: var(--muted); font-size: .95rem; line-height: 1.45; }
+  .step-t b { color: var(--ink); font-weight: 680; }
+  .step-t code { font-family: var(--mono); font-size: .88em; color: var(--pink-soft); }
 
   .plat { display: flex; flex-wrap: wrap; gap: .6rem; margin-top: 2rem; }
   .chip { font-family: var(--mono); font-size: .8rem; letter-spacing: .06em; padding: .5rem 1rem; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); }
@@ -182,7 +229,7 @@
   .close { text-align: center; padding: clamp(4rem, 11vw, 7rem) 0; }
   .close h2 { font-size: clamp(2.6rem, 8vw, 4.6rem); margin-bottom: 1.3rem; }
   .close .sub { margin: 0 auto 2.2rem; }
-  .close img { width: 92px; height: 92px; border-radius: 22px; margin-bottom: 2rem; border: 1px solid var(--line); }
+  .close img { width: 104px; height: 104px; margin-bottom: 2rem; filter: drop-shadow(0 14px 34px rgba(255,61,190,.3)); }
 
   footer { border-top: 1px solid var(--line); padding: 2.5rem 0; color: var(--dim); font-size: .88rem; }
   .foot-in { display: flex; flex-wrap: wrap; gap: 1rem 2rem; align-items: center; }
@@ -196,7 +243,7 @@
 
 <nav>
   <div class="wrap nav-in">
-    <a class="brand" href="#top"><img src="assets/pengy.jpg" alt=""> Pengy</a>
+    <a class="brand" href="#top"><img src="assets/pengy-mark.png" alt=""> Pengy</a>
     <div class="nav-links">
       <a href="#difference">The difference</a>
       <a href="#night">A night with Pengy</a>
@@ -214,8 +261,17 @@
       <div class="mono eyebrow">For people running more than one AI agent</div>
       <h1>Stop<br>watching.</h1>
       <p class="lede">Every other tool shows you more terminals. Pengy <strong>runs</strong> them — through the night, through the rate limits — and wakes you only when it's genuinely stuck.</p>
-      <div class="cmd" title="Click to select, then copy"><code>curl -fsSL https://raw.githubusercontent.com/swaterhousesydney-star/pengy/main/install.sh | sh</code></div>
-      <div class="cta-row" style="margin-top:1.1rem">
+      <ol class="steps" style="margin-bottom:1.6rem">
+        <li>
+          <span class="step-t"><b>Install it.</b> One file into <code>~/.local/bin</code>.</span>
+          <button type="button" class="cmd" aria-label="Copy command: curl -fsSL https://raw.githubusercontent.com/swaterhousesydney-star/pengy/main/install.sh | sh"><code>curl -fsSL https://raw.githubusercontent.com/swaterhousesydney-star/pengy/main/install.sh | sh</code><span class="copy" aria-live="polite">Copy</span></button>
+        </li>
+        <li>
+          <span class="step-t"><b>Then just type <code>pengy</code>.</b> The window opens in your browser — that's it, you're in.</span>
+          <button type="button" class="cmd" style="max-width:min(260px,100%)" aria-label="Copy command: pengy"><code>pengy</code><span class="copy" aria-live="polite">Copy</span></button>
+        </li>
+      </ol>
+      <div class="cta-row">
         <a class="btn" href="https://github.com/swaterhousesydney-star/pengy">View on GitHub</a>
         <a class="btn-ghost" href="#night">See a night with Pengy</a>
       </div>
@@ -223,7 +279,7 @@
     </div>
     <div class="hero-art">
       <div class="zzz">z z z</div>
-      <img src="assets/pengy.jpg" alt="Pengy">
+      <img src="assets/pengy-cut.png" alt="Pengy">
     </div>
   </div>
 </header>
@@ -366,8 +422,9 @@
   <div class="wrap">
     <div class="mono kicker">If you don't like terminals</div>
     <h2>There's a window,<br>and Pengy does the talking.</h2>
-    <p class="sub">One command opens a Pengy window instead. It tells you which agents are ready and which are capped, you type the job in plain English, and it narrates the night back to you — including the cap it's waiting out. On Linux, <code style="font-family:var(--mono);font-size:.85em;color:var(--pink-soft)">pengy desktop</code> puts a Pengy icon in your applications menu, so it's a double-click.</p>
-    <div class="cmd" style="max-width:min(300px,100%);margin-top:1.8rem" title="Click to select, then copy"><code>pengy chat</code></div>
+    <p class="sub">Typing <code style="font-family:var(--mono);font-size:.85em;color:var(--pink-soft)">pengy</code> on its own opens the window — no subcommand to remember. It tells you which agents are ready and which are capped, you type the job in plain English, and it narrates the night back to you, including the cap it's waiting out. On Linux, <code style="font-family:var(--mono);font-size:.85em;color:var(--pink-soft)">pengy desktop</code> puts a Pengy icon in your applications menu, so it's a double-click.</p>
+    <button type="button" class="cmd" style="max-width:min(260px,100%);margin-top:1.8rem" aria-label="Copy command: pengy"><code>pengy</code><span class="copy" aria-live="polite">Copy</span></button>
+    <p class="sub" style="margin-top:1.6rem">Or <code style="font-family:var(--mono);font-size:.85em;color:var(--pink-soft)">pengy widget</code> — a small Pengy that floats above every window and stays there. She tells you what the agents are doing at a glance, and shuts her eyes while she waits out a cap.</p>
     <p class="sub" style="margin-top:1.6rem">Runs on your own machine at <code style="font-family:var(--mono);font-size:.85em">127.0.0.1</code>, behind a token generated fresh each launch. No Electron and no dependencies — it's drawn by the standard library.</p>
   </div>
 </section>
@@ -377,24 +434,33 @@
     <div class="mono kicker">Also a plugin</div>
     <h2>Your agent can hand<br>work to Pengy itself.</h2>
     <p class="sub">Pengy runs as an MCP server, so the agent you're already talking to can check who still has quota and start a job that survives the cap. One line per host — Claude Code, Codex, Gemini CLI, Cursor, anything that speaks MCP.</p>
-    <div class="cmd" style="max-width:min(460px,100%);margin-top:1.8rem" title="Click to select, then copy"><code>claude mcp add pengy -- pengy mcp</code></div>
+    <button type="button" class="cmd" style="max-width:min(460px,100%);margin-top:1.8rem" aria-label="Copy command: claude mcp add pengy -- pengy mcp"><code>claude mcp add pengy -- pengy mcp</code><span class="copy" aria-live="polite">Copy</span></button>
     <p class="sub" style="margin-top:1.6rem">Then: <em>"check what still has budget and hand the migration to Codex overnight."</em> An agent can't grant itself a bypass mode — jobs it starts run on the leash, and only you can change that.</p>
   </div>
 </section>
 
 <section class="close" id="access">
   <div class="wrap">
-    <img src="assets/pengy.jpg" alt="Pengy">
+    <img src="assets/pengy-mark.png" alt="Pengy">
     <h2>Go to bed.</h2>
     <p class="sub">One file, no dependencies, nothing to sign up for. Needs Python 3.9+ and an agent CLI you're already logged into.</p>
-    <div class="cmd" style="max-width:min(520px,100%);margin:0 auto 1.4rem;text-align:left" title="Click to select, then copy"><code>curl -fsSL https://raw.githubusercontent.com/swaterhousesydney-star/pengy/main/install.sh | sh</code></div>
+    <ol class="steps" style="max-width:min(560px,100%);margin:2.4rem auto 1.8rem">
+      <li>
+        <span class="step-t"><b>Install it.</b></span>
+        <button type="button" class="cmd" aria-label="Copy command: curl -fsSL https://raw.githubusercontent.com/swaterhousesydney-star/pengy/main/install.sh | sh"><code>curl -fsSL https://raw.githubusercontent.com/swaterhousesydney-star/pengy/main/install.sh | sh</code><span class="copy" aria-live="polite">Copy</span></button>
+      </li>
+      <li>
+        <span class="step-t"><b>Type <code>pengy</code> and the window opens.</b> Nothing else to learn — you can drive the whole thing from there.</span>
+        <button type="button" class="cmd" style="max-width:min(260px,100%)" aria-label="Copy command: pengy"><code>pengy</code><span class="copy" aria-live="polite">Copy</span></button>
+      </li>
+    </ol>
     <a class="btn" href="https://github.com/swaterhousesydney-star/pengy">View on GitHub</a>
   </div>
 </section>
 
 <footer>
   <div class="wrap foot-in">
-    <a class="brand" href="#top" style="font-size:1rem"><img src="assets/pengy.jpg" alt="" style="width:22px;height:22px"> Pengy</a>
+    <a class="brand" href="#top" style="font-size:1rem"><img src="assets/pengy-mark.png" alt="" style="width:22px;height:22px"> Pengy</a>
     <a href="#difference">The difference</a>
     <a href="#control">Control</a>
     <a href="https://github.com/swaterhousesydney-star/pengy">GitHub</a>
@@ -402,6 +468,49 @@
     <span class="foot-note">MIT licensed · runs entirely on your machine</span>
   </div>
 </footer>
+
+<script>
+// One tap copies the command and says so. execCommand is the fallback for
+// pages not served over https, where navigator.clipboard does not exist.
+document.querySelectorAll('.cmd').forEach(function (btn) {
+  var label = btn.querySelector('.copy');
+  var timer;
+  btn.addEventListener('click', function () {
+    var text = btn.querySelector('code').textContent.trim();
+    var done = function (ok) {
+      if (!ok) {
+        // Don't tell them to press ⌘C over nothing — select the command first.
+        var range = document.createRange();
+        range.selectNodeContents(btn.querySelector('code'));
+        var sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
+      label.textContent = ok ? 'Copied' : 'Now press ⌘C';
+      btn.classList.toggle('done', ok);
+      clearTimeout(timer);
+      timer = setTimeout(function () {
+        label.textContent = 'Copy';
+        btn.classList.remove('done');
+      }, 2000);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(false); });
+      return;
+    }
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    ta.remove();
+    done(ok);
+  });
+});
+</script>
 
 </body>
 </html>

@@ -23,6 +23,10 @@ Three MCP tools, provided by this plugin:
 - **`pengy_quota`** — which agents are installed and which are capped. Check this before delegating, and prefer an agent whose quota is `ok`.
 - **`pengy_run`** — start the job. Takes `prompt`, and optionally `agent`, `dir`, and `fallback` (another agent to hand the job to instead of waiting out a cap). Returns a job id straight away; it does not block.
 - **`pengy_jobs`** — status of running and finished jobs.
+- **`pengy_swarm`** — put several agents on the same goal at once. Takes `prompt`, and optionally `agents` and `dir`. They are not assigned tasks; they claim work off a shared board so no plan is needed up front.
+- **`pengy_board`** — read that board: who claimed what, what landed, what is blocked.
+
+Reach for `pengy_swarm` when the goal is genuinely wide — a sweep across many independent files, a big test suite, a codebase-wide audit — and for nothing else. Two agents on one narrow task will collide over the same files and produce worse work than one. When in doubt, `pengy_run`.
 
 Write the `prompt` as a complete, self-contained brief. The background agent starts with no memory of this conversation — it gets your prompt and the working directory, nothing else. Say which files, which commands to run, and what "done" looks like.
 
@@ -33,6 +37,7 @@ After starting a job, tell the user the job id and that `pengy jobs` shows progr
 - Background jobs run on the leash by default: the agent edits files but does not get a bypass mode. An agent cannot grant itself `--off-leash`; only the human can, via `PENGY_MCP_ALLOW_OFF_LEASH=1`.
 - `fallback` starts a **fresh context** on the other agent. It cannot read the first agent's session.
 - If a cap message contains no readable reset time, Pengy stops rather than guessing when to resume. That job will be waiting for the user.
+- A swarm is not transactional. Agents claim work to avoid collisions, but two of them can still touch the same file. Say so before starting one, and prefer a directory under git.
 
 ## If the tools are missing
 

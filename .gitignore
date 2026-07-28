@@ -10,3 +10,7 @@ notes/
 # copied in by the pages workflow at deploy time
 site/pengy.py
 site/install.sh
+
+# stray agent test artifacts
+*.txt
+!requirements*.txt
